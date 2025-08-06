@@ -1,6 +1,35 @@
 import argparse
 import os
+import pandas as pd
 from metrics.metrics import eval_retrieval_qa, eval_compilation_qa, eval_definition_qa, eval_presence_qa, eval_dimensions_qa, eval_functional_performance_qa
+
+def validate_csv_has_model_prediction(csv_path, subset_name):
+    """
+    Validate that a CSV file contains the required 'model_prediction' column.
+    
+    Args:
+        csv_path (str): Path to the CSV file
+        subset_name (str): Name of the subset for error reporting
+        
+    Raises:
+        ValueError: If the CSV is missing the 'model_prediction' column
+    """
+    try:
+        df = pd.read_csv(csv_path)
+        if 'model_prediction' not in df.columns:
+            raise ValueError(
+                f"[ERROR] The CSV {csv_path} does not contain the required 'model_prediction' column. "
+                f"This likely means you passed in a raw question dataset instead of a model output file. "
+                f"Please run the generation step for the {subset_name} subset to create a CSV with model predictions before running evaluation."
+            )
+        print(f"✓ {subset_name} CSV validation passed: 'model_prediction' column found")
+    except FileNotFoundError:
+        raise FileNotFoundError(f"Could not find the CSV file: {csv_path}")
+    except Exception as e:
+        if "model_prediction" in str(e):
+            raise e
+        else:
+            raise ValueError(f"Error reading CSV file {csv_path}: {str(e)}")
 
 def main():
     parser = argparse.ArgumentParser(description="Optional paths for CAD evaluation inputs")
@@ -39,27 +68,33 @@ def main():
     
     all_subsets = []
     if args.path_to_retrieval:
+        validate_csv_has_model_prediction(args.path_to_retrieval, "retrieval")
         macro_avg_retrieval, all_answers_retrieval = eval_retrieval_qa(args.path_to_retrieval)
         all_subsets.append(macro_avg_retrieval)
         
     if args.path_to_compilation:
+        validate_csv_has_model_prediction(args.path_to_compilation, "compilation")
         macro_avg_compilation, all_answers_compilation = eval_compilation_qa(args.path_to_compilation)
         all_subsets.append(macro_avg_compilation)
         
     if args.path_to_definition:
+        validate_csv_has_model_prediction(args.path_to_definition, "definition")
         macro_avg_definition, definitions_qs_definition_avg, multi_qs_definition_avg, single_qs_definition_avg, all_answers_definition = eval_definition_qa(args.path_to_definition)
         all_subsets.append(macro_avg_definition)
         
     if args.path_to_presence:
+        validate_csv_has_model_prediction(args.path_to_presence, "presence")
         macro_avg_presence, definitions_qs_presence_avg, multi_qs_presence_avg, single_qs_presence_avg, all_answers_presence = eval_presence_qa(args.path_to_presence)
         all_subsets.append(macro_avg_presence)
         
     if args.path_to_dimension:
+        validate_csv_has_model_prediction(args.path_to_dimension, "dimension")
         macro_avg_accuracy_dimension, direct_dim_avg, scale_bar_avg, all_accuracies_dimension, macro_avg_bleus_dimension, all_bleus_dimension, \
                 macro_avg_rogues_dimension, all_rogues_dimension = eval_dimensions_qa(args.path_to_dimension)
         all_subsets.append(macro_avg_accuracy_dimension)
 
     if args.path_to_functional_performance:
+        validate_csv_has_model_prediction(args.path_to_functional_performance, "functional_performance")
         macro_avg_accuracy_functional, all_accuracies_functional, macro_avg_bleus_functional, all_bleus_functional, macro_avg_rogues_functional, all_rogues_functional = eval_functional_performance_qa(args.path_to_functional_performance)
         all_subsets.append(macro_avg_accuracy_functional)
 
