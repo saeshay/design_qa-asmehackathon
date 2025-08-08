@@ -409,10 +409,10 @@ def eval_dimensions_qa(results_csv):
                 rouge_l = score_rouge(row['explanation'], explanation)
                 rogues.append(rouge_l)
 
-                # compute similarity
-                sentence_transformer = SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2').cuda()
-                sim_score = similariry_score(row['explanation'], explanation, sentence_transformer)
-                similarities.append(sim_score)
+                # # compute similarity
+                # sentence_transformer = SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2').cuda()
+                # sim_score = similariry_score(row['explanation'], explanation, sentence_transformer)
+                # similarities.append(sim_score)
 
     def mean_score(input_list):
         if len(input_list) < 1:
@@ -420,7 +420,7 @@ def eval_dimensions_qa(results_csv):
         else:
             return mean(input_list)
 
-    return mean_score(accuracies), mean_score(direct_dim_accuracies), mean_score(scale_bar_accuracies), accuracies, mean_score(bleus), bleus, mean(rogues), rogues, mean(similarities), similarities
+    return mean_score(accuracies), mean_score(direct_dim_accuracies), mean_score(scale_bar_accuracies), accuracies, mean_score(bleus), bleus, mean(rogues), rogues
 
 
 def eval_functional_performance_qa(results_csv):
@@ -500,10 +500,10 @@ def eval_functional_performance_qa(results_csv):
             rouge_l = score_rouge(row['explanation'], explanation)
             rogues.append(rouge_l)
 
-            # compute similarity
-            sentence_transformer = SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2').cuda()
-            sim_score = similariry_score(row['explanation'], explanation, sentence_transformer)
-            similarities.append(sim_score)
+            # # compute similarity
+            # sentence_transformer = SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2').cuda()
+            # sim_score = similariry_score(row['explanation'], explanation, sentence_transformer)
+            # similarities.append(sim_score)
 
     def mean_score(input_list):
         if len(input_list) < 1:
@@ -511,7 +511,7 @@ def eval_functional_performance_qa(results_csv):
         else:
             return mean(input_list)
 
-    return mean_score(accuracies), accuracies, mean_score(bleus), bleus, mean(rogues), rogues, mean_score(similarities), similarities
+    return mean_score(accuracies), accuracies, mean_score(bleus), bleus, mean(rogues), rogues
 
 
 if __name__ == '__main__':

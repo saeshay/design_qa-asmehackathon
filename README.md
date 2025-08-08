@@ -6,6 +6,64 @@ Check out the pre-print [here](https://arxiv.org/abs/2404.07917)!
 
 Check out our official website and leaderboard [here](https://design-qa.github.io/)!
 
+
+## IDETC Hackathon 2025
+
+**DesignQA is an IDETC Hackathon problem!!**  
+More hackathon details can be found:
+
+
+
+---
+
+### Setup
+
+First, git clone this repo and cd into `design_qa`:
+
+```
+git clone https://github.com/anniedoris/design_qa.git && cd design_qa
+```
+
+Next, create a conda environment and install the requirements:
+
+```
+conda create -n design_qa python=3.10 -y && pip install -r requirements.txt
+```
+
+### Running the Evaluation
+To evaluate your approach's score on the DesignQA benchmark, run:
+
+```
+python eval/full_evaluation.py --path_to_retrieval {path_to_csv_for_retrieval} --path_to_compilation {path_to_csv_for_compilation} --path_to_definition {path_to_csv_for_definition} --path_to_presence {path_to_csv_for_presence} --path_to_dimension {path_to_csv_for_dimension} --path_to_functional_performance {path_to_csv_for_functional_performance}
+```
+
+Each csv file should have two columns: `ground_truth` and `model_prediction`. The `ground_truth` column should contain the correct answers to the questions, while the `model_prediction` column should contain your model/approach's corresponding answer. Essentially, when you evalaute your solution, you should copy each of the dataset csvs (detailed in the [Dataset](#dataset) section below) and add a column called `model_prediction` for your solutions's answers.
+
+If you want to see how this works for a model (LLaVA) that we evalauted in our paper, you can run:
+
+```
+python eval/full_evaluation.py --path_to_retrieval eval/rule_extraction/retrieval_evaluation_llava-13b.csv --path_to_compilation eval/rule_extraction/compilation_evaluation_llava-13b.csv --path_to_definition eval/rule_comprehension/definition_evaluation_llava-13b.csv --path_to_presence eval/rule_comprehension/presence_evaluation_llava-13b.csv --path_to_dimension eval/rule_compliance/dimension_context_evaluation_llava-13b.csv --path_to_functional_performance eval/rule_compliance/dimension_functional_performance_evaluation_llava-13b.csv
+```
+
+This will output a file called `results.txt` that contains your overall score on the benchmark. Note that your overall score is an average of your approach's scores across all six segments of the benchmark, like so:
+
+$$
+\text{Overall Score} =
+\frac{
+\begin{aligned}
+ & \text{Avg F1 BoW Retrieval Score} \\
++ & \text{Avg F1 Rules Compilation Score} \\
++ & \text{Avg F1 BoC Definition Score} \\
++ & \text{Avg Accuracy Presence Score} \\
++ & \text{Avg Accuracy Dimension Score} \\
++ & \text{Avg Accuracy Functional Performance Score}
+\end{aligned}
+}{6}
+$$
+
+`Results.txt` will also contain other interesting diagnostic metrics, along with the scores for each individual question in the benchmark. Keep in mind that the number of questions in each segment of the benchmark is different (see below overview image), but overall score is a simple average (not weighted), so you may want to consider this when designing your approach!
+
+
 ## Overview
 
 DesignQA is a novel benchmark aimed at evaluating the proficiency of multimodal large language models (MLLMs) in comprehending and applying engineering requirements in technical documentation. The benchmark is developed in conjunction with the MIT Motorsport team, so that the question-answer pairs are based on real world data and the ~200 page FSAE competition rules. Some key features of the DesignQA benchmark include:

@@ -1,0 +1,4 @@
+nltk
+rouge
+pandas
+sentence_transformers
