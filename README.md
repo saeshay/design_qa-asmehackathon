@@ -12,9 +12,9 @@ Check out our official website and leaderboard [here](https://design-qa.github.i
 **DesignQA is an IDETC Hackathon problem!!**  
 More hackathon details can be found:
 
+**[Problem Statement](https://docs.google.com/document/d/1LHNeR43yV3V4RchvwbLkLtKHeTPJNfeN7SBOGBDwgTY/edit?usp=sharing)**
 
-
----
+**[Presentation Slides](https://docs.google.com/presentation/d/1tDNuBypVI6RAIeluFsKlpYgqknvDarjxTHNV90Tzpuw/edit?usp=sharing)**
 
 ### Setup
 
@@ -50,16 +50,17 @@ This will output a file called `results.txt` that contains your overall score on
 $$
 \text{Overall Score} =
 \frac{
-\begin{aligned}
- & \text{Avg F1 BoW Retrieval Score} \\
-+ & \text{Avg F1 Rules Compilation Score} \\
-+ & \text{Avg F1 BoC Definition Score} \\
-+ & \text{Avg Accuracy Presence Score} \\
-+ & \text{Avg Accuracy Dimension Score} \\
-+ & \text{Avg Accuracy Functional Performance Score}
-\end{aligned}
+\begin{array}{l}
+\text{Avg F1 BoW Retrieval Score} \\
++ \text{Avg F1 Rules Compilation Score} \\
++ \text{Avg F1 BoC Definition Score} \\
++ \text{Avg Accuracy Presence Score} \\
++ \text{Avg Accuracy Dimension Score} \\
++ \text{Avg Accuracy Functional Performance Score}
+\end{array}
 }{6}
 $$
+
 
 `Results.txt` will also contain other interesting diagnostic metrics, along with the scores for each individual question in the benchmark. Keep in mind that the number of questions in each segment of the benchmark is different (see below overview image), but overall score is a simple average (not weighted), so you may want to consider this when designing your approach!
 
