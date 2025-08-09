@@ -27,7 +27,7 @@ git clone https://github.com/anniedoris/design_qa.git && cd design_qa
 Next, create a conda environment and install the requirements:
 
 ```
-conda create -n design_qa python=3.10 -y && pip install -r requirements.txt
+conda create -n design_qa python=3.10 -y && conda activate design_qa && pip install -r requirements.txt
 ```
 
 ### Running the Evaluation
