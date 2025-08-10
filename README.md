@@ -12,7 +12,7 @@ Check out our official website and leaderboard [here](https://design-qa.github.i
 **DesignQA is an IDETC Hackathon problem!!**  
 More hackathon details can be found:
 
-**[Problem Statement](https://docs.google.com/document/d/1LHNeR43yV3V4RchvwbLkLtKHeTPJNfeN7SBOGBDwgTY/edit?usp=sharing)**
+**[Problem Statement](https://docs.google.com/document/d/1LHNeR43yV3V4RchvwbLkLtKHeTPJNfeN7SBOGBDwgTY/edit?usp=sharing)** - Please read this problem statement in detail before beginning!
 
 **[Presentation Slides](https://docs.google.com/presentation/d/1tDNuBypVI6RAIeluFsKlpYgqknvDarjxTHNV90Tzpuw/edit?usp=sharing)**
 
