@@ -1,4 +1,5 @@
 import os
+import sys
 import subprocess
 
 from pathlib import Path
@@ -22,7 +23,7 @@ def main():
 
     # Now run full evaluation
     cmd = [
-        "python3", "eval/full_evaluation.py",
+        sys.executable, "eval/full_evaluation.py",
         "--path_to_retrieval", "your_outputs/retrieval.csv",
         "--path_to_compilation", "your_outputs/compilation.csv",
         "--path_to_definition", "your_outputs/definition.csv",

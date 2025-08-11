@@ -60,10 +60,28 @@ def build_client(provider: str):
     return MockClient()
 
 
-def run_all(paths: Paths, provider: str = "mock"):
+def get_clients():
+    provider = os.getenv("DQ_PROVIDER", "mock").lower()
+    default_client = MockClient()
+    escalation = None
+    if provider == "openai":
+        default_client = OpenAIClient(model=os.getenv("DQ_OPENAI_MODEL", "gpt-4o-mini"))
+        escalation = OpenAIClient(model=os.getenv("DQ_OPENAI_BIG", "gpt-4o"))
+    elif provider == "anthropic":
+        default_client = AnthropicClient(model=os.getenv("DQ_ANTHROPIC_MODEL", "claude-3-haiku-20240307"))
+        escalation = AnthropicClient(model=os.getenv("DQ_ANTHROPIC_BIG", "claude-3-5-sonnet-20240620"))
+    return default_client, escalation
+
+
+def run_all(paths: Paths, provider: Optional[str] = None):
     ensure_dir(paths.out_dir)
 
-    client = build_client(provider)
+    # Select client via explicit provider override or env-driven get_clients
+    if provider is not None:
+        client = build_client(provider)
+    else:
+        client, _ = get_clients()
+
     retriever = RuleAwareRetriever(RetrieverConfig())
 
     # Rule extraction
@@ -98,7 +116,7 @@ def run_all(paths: Paths, provider: str = "mock"):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--run", action="store_true", help="Run the full pipeline")
-    parser.add_argument("--provider", choices=["mock", "openai", "anthropic"], default="mock")
+    parser.add_argument("--provider", choices=["mock", "openai", "anthropic"], default=None)
     args = parser.parse_args()
     if args.run:
         run_all(Paths(), provider=args.provider)
