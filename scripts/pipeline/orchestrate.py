@@ -70,6 +70,13 @@ def build_client(provider: str):
 
 def get_clients():
     provider = os.getenv("DQ_PROVIDER", "mock").lower()
+
+    if provider == "hybrid":
+        # OpenAI default, Anthropic escalation
+        default_client = OpenAIClient(model=os.getenv("DQ_OPENAI_MODEL", "gpt-4o-mini"))
+        escalation = AnthropicClient(model=os.getenv("DQ_ANTHROPIC_BIG", "claude-3-5-sonnet-20240620"))
+        return default_client, escalation
+
     default_client = MockClient()
     escalation = None
     if provider == "openai":
