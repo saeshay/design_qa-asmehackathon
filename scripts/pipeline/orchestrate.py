@@ -78,25 +78,26 @@ def run_all(paths: Paths, provider: Optional[str] = None):
 
     # Select client via explicit provider override or env-driven get_clients
     if provider is not None:
-        client = build_client(provider)
+        default_client = build_client(provider)
+        escalation = None
     else:
-        client, _ = get_clients()
+        default_client, escalation = get_clients()
 
     retriever = RuleAwareRetriever(RetrieverConfig())
 
     # Rule extraction
-    RetrievalHead(client, retriever, SYSTEM_PROMPTS["retrieval"]).run(
+    RetrievalHead(default_client, retriever, SYSTEM_PROMPTS["retrieval"], escalation=escalation).run(
         paths.retrieval_csv, os.path.join(paths.out_dir, "retrieval.csv")
     )
-    CompilationHead(client, retriever, SYSTEM_PROMPTS["compilation"]).run(
+    CompilationHead(default_client, retriever, SYSTEM_PROMPTS["compilation"], escalation=escalation).run(
         paths.compilation_csv, os.path.join(paths.out_dir, "compilation.csv")
     )
 
     # Rule comprehension
-    DefinitionHead(client, SYSTEM_PROMPTS["definition"]).run(
+    DefinitionHead(default_client, SYSTEM_PROMPTS["definition"], escalation=escalation).run(
         paths.definition_csv, paths.definition_images_dir, os.path.join(paths.out_dir, "definition.csv")
     )
-    PresenceHead(client, SYSTEM_PROMPTS["presence"]).run(
+    PresenceHead(default_client, SYSTEM_PROMPTS["presence"], escalation=escalation).run(
         paths.presence_csv, paths.presence_images_dir, os.path.join(paths.out_dir, "presence.csv")
     )
 
@@ -106,9 +107,9 @@ def run_all(paths: Paths, provider: Optional[str] = None):
         ("dimension_detailed", paths.dimension_detailed_csv, paths.dimension_detailed_images_dir),
     ]:
         out_path = os.path.join(paths.out_dir, f"{subset_name}.csv")
-        DimensionHead(client, SYSTEM_PROMPTS["dimension"]).run(dim_csv, dim_dir, out_path)
+        DimensionHead(default_client, SYSTEM_PROMPTS["dimension"], escalation=escalation).run(dim_csv, dim_dir, out_path)
 
-    FunctionalHead(client, SYSTEM_PROMPTS["functional"]).run(
+    FunctionalHead(default_client, SYSTEM_PROMPTS["functional"], escalation=escalation).run(
         paths.functional_csv, paths.functional_images_dir, os.path.join(paths.out_dir, "functional_performance.csv")
     )
 
