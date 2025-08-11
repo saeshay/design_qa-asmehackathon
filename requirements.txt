@@ -3,3 +3,6 @@ rouge
 pandas
 sentence_transformers
 rank-bm25
+tenacity
+openai
+anthropic

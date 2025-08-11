@@ -6,7 +6,6 @@ from typing import Optional
 import pandas as pd
 
 from .rule_retriever import RuleAwareRetriever, RetrieverConfig
-from .vlm_clients import MockClient, Ensemble
 from .task_heads import (
     RetrievalHead,
     CompilationHead,
@@ -15,6 +14,7 @@ from .task_heads import (
     DimensionHead,
     FunctionalHead,
 )
+from .vlm_clients import MockClient, OpenAIClient, AnthropicClient
 
 
 @dataclass
@@ -51,40 +51,46 @@ def ensure_dir(path: str):
     os.makedirs(path, exist_ok=True)
 
 
-def run_all(paths: Paths):
+def build_client(provider: str):
+    provider = (provider or "mock").lower()
+    if provider == "openai":
+        return OpenAIClient(os.getenv("OPENAI_MODEL", "gpt-4o-mini"))
+    if provider == "anthropic":
+        return AnthropicClient(os.getenv("ANTHROPIC_MODEL", "claude-3-haiku-20240307"))
+    return MockClient()
+
+
+def run_all(paths: Paths, provider: str = "mock"):
     ensure_dir(paths.out_dir)
 
-    # Clients and ensemble: plug in real clients here (Claude/GPT-4o) and set confidences
-    clients = [MockClient("vlm_a"), MockClient("vlm_b")]
-    ensemble = Ensemble(clients)
-
+    client = build_client(provider)
     retriever = RuleAwareRetriever(RetrieverConfig())
 
     # Rule extraction
-    RetrievalHead(ensemble, retriever, SYSTEM_PROMPTS["retrieval"]).run(
+    RetrievalHead(client, retriever, SYSTEM_PROMPTS["retrieval"]).run(
         paths.retrieval_csv, os.path.join(paths.out_dir, "retrieval.csv")
     )
-    CompilationHead(ensemble, retriever, SYSTEM_PROMPTS["compilation"]).run(
+    CompilationHead(client, retriever, SYSTEM_PROMPTS["compilation"]).run(
         paths.compilation_csv, os.path.join(paths.out_dir, "compilation.csv")
     )
 
     # Rule comprehension
-    DefinitionHead(ensemble, SYSTEM_PROMPTS["definition"]).run(
+    DefinitionHead(client, SYSTEM_PROMPTS["definition"]).run(
         paths.definition_csv, paths.definition_images_dir, os.path.join(paths.out_dir, "definition.csv")
     )
-    PresenceHead(ensemble, SYSTEM_PROMPTS["presence"]).run(
+    PresenceHead(client, SYSTEM_PROMPTS["presence"]).run(
         paths.presence_csv, paths.presence_images_dir, os.path.join(paths.out_dir, "presence.csv")
     )
 
-    # Rule compliance (two dimension subsets averaged by evaluator; we will concat into one CSV for each subset run)
+    # Rule compliance
     for subset_name, dim_csv, dim_dir in [
         ("dimension_context", paths.dimension_context_csv, paths.dimension_context_images_dir),
         ("dimension_detailed", paths.dimension_detailed_csv, paths.dimension_detailed_images_dir),
     ]:
         out_path = os.path.join(paths.out_dir, f"{subset_name}.csv")
-        DimensionHead(ensemble, SYSTEM_PROMPTS["dimension"]).run(dim_csv, dim_dir, out_path)
+        DimensionHead(client, SYSTEM_PROMPTS["dimension"]).run(dim_csv, dim_dir, out_path)
 
-    FunctionalHead(ensemble, SYSTEM_PROMPTS["functional"]).run(
+    FunctionalHead(client, SYSTEM_PROMPTS["functional"]).run(
         paths.functional_csv, paths.functional_images_dir, os.path.join(paths.out_dir, "functional_performance.csv")
     )
 
@@ -92,6 +98,7 @@ def run_all(paths: Paths):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--run", action="store_true", help="Run the full pipeline")
+    parser.add_argument("--provider", choices=["mock", "openai", "anthropic"], default="mock")
     args = parser.parse_args()
     if args.run:
-        run_all(Paths())
+        run_all(Paths(), provider=args.provider)

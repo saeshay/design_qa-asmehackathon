@@ -11,7 +11,6 @@ from .format_checker import (
     normalize_component_name,
     normalize_explained_yes_no,
 )
-from .vlm_clients import Ensemble, ModelOutput
 from .rule_retriever import RuleAwareRetriever
 
 
@@ -26,8 +25,8 @@ class SubsetPrompts:
 
 
 class RetrievalHead:
-    def __init__(self, ensemble: Ensemble, retriever: RuleAwareRetriever, system_prompt: str):
-        self.ensemble = ensemble
+    def __init__(self, client, retriever: RuleAwareRetriever, system_prompt: str):
+        self.client = client
         self.retriever = retriever
         self.system_prompt = system_prompt
 
@@ -36,7 +35,6 @@ class RetrievalHead:
         preds = []
         for _, row in df.iterrows():
             q = f"{self.system_prompt}\n{row['question']}"
-            # Add short context: rule number match
             # Attempt exact lookup to produce verbatim rule text
             rn = None
             for token in row['question'].split():
@@ -47,7 +45,7 @@ class RetrievalHead:
             if verbatim:
                 raw = verbatim
             else:
-                raw = self.ensemble.query(q).text
+                raw = self.client.answer(q, image_path=None, max_tokens=96)
             preds.append(normalize_rule_text(raw))
         df_out = df.copy()
         df_out["model_prediction"] = preds
@@ -55,8 +53,8 @@ class RetrievalHead:
 
 
 class CompilationHead:
-    def __init__(self, ensemble: Ensemble, retriever: RuleAwareRetriever, system_prompt: str):
-        self.ensemble = ensemble
+    def __init__(self, client, retriever: RuleAwareRetriever, system_prompt: str):
+        self.client = client
         self.retriever = retriever
         self.system_prompt = system_prompt
 
@@ -64,7 +62,6 @@ class CompilationHead:
         df = pd.read_csv(in_csv)
         preds = []
         for _, row in df.iterrows():
-            q = f"{self.system_prompt}\n{row['question']}"
             # Parse term inside backticks
             term = row['question'].split('`')
             term = term[1] if len(term) >= 2 else row['question']
@@ -77,8 +74,8 @@ class CompilationHead:
 
 
 class DefinitionHead:
-    def __init__(self, ensemble: Ensemble, system_prompt: str):
-        self.ensemble = ensemble
+    def __init__(self, client, system_prompt: str):
+        self.client = client
         self.system_prompt = system_prompt
 
     def run(self, in_csv: str, images_dir: str, out_csv: str):
@@ -87,7 +84,7 @@ class DefinitionHead:
         for _, row in df.iterrows():
             q = f"{self.system_prompt}\n{row['question']}"
             img = f"{images_dir}/{row['image']}"
-            raw = self.ensemble.query(q, img).text
+            raw = self.client.answer(q, image_path=img, max_tokens=16)
             preds.append(normalize_component_name(raw))
         df_out = df.copy()
         df_out["model_prediction"] = preds
@@ -95,8 +92,8 @@ class DefinitionHead:
 
 
 class PresenceHead:
-    def __init__(self, ensemble: Ensemble, system_prompt: str):
-        self.ensemble = ensemble
+    def __init__(self, client, system_prompt: str):
+        self.client = client
         self.system_prompt = system_prompt
 
     def run(self, in_csv: str, images_dir: str, out_csv: str):
@@ -105,7 +102,7 @@ class PresenceHead:
         for _, row in df.iterrows():
             q = f"{self.system_prompt}\n{row['question']}"
             img = f"{images_dir}/{row['image']}"
-            raw = self.ensemble.query(q, img).text
+            raw = self.client.answer(q, image_path=img, max_tokens=4)
             preds.append(normalize_yes_no(raw))
         df_out = df.copy()
         df_out["model_prediction"] = preds
@@ -113,8 +110,8 @@ class PresenceHead:
 
 
 class DimensionHead:
-    def __init__(self, ensemble: Ensemble, system_prompt: str):
-        self.ensemble = ensemble
+    def __init__(self, client, system_prompt: str):
+        self.client = client
         self.system_prompt = system_prompt
 
     def run(self, in_csv: str, images_dir: str, out_csv: str):
@@ -123,7 +120,7 @@ class DimensionHead:
         for _, row in df.iterrows():
             q = f"{self.system_prompt}\n{row['question']}"
             img = f"{images_dir}/{row['image']}"
-            raw = self.ensemble.query(q, img).text
+            raw = self.client.answer(q, image_path=img, max_tokens=64)
             preds.append(normalize_explained_yes_no(raw))
         df_out = df.copy()
         df_out["model_prediction"] = preds
@@ -131,8 +128,8 @@ class DimensionHead:
 
 
 class FunctionalHead:
-    def __init__(self, ensemble: Ensemble, system_prompt: str):
-        self.ensemble = ensemble
+    def __init__(self, client, system_prompt: str):
+        self.client = client
         self.system_prompt = system_prompt
 
     def run(self, in_csv: str, images_dir: str, out_csv: str):
@@ -141,7 +138,7 @@ class FunctionalHead:
         for _, row in df.iterrows():
             q = f"{self.system_prompt}\n{row['question']}"
             img = f"{images_dir}/{row['image']}"
-            raw = self.ensemble.query(q, img).text
+            raw = self.client.answer(q, image_path=img, max_tokens=64)
             preds.append(normalize_explained_yes_no(raw))
         df_out = df.copy()
         df_out["model_prediction"] = preds
