@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 import pandas as pd
+import shutil, time
 
 from .rule_retriever import RuleAwareRetriever, RetrieverConfig
 from .task_heads import (
@@ -88,6 +89,23 @@ def get_clients():
     return default_client, escalation
 
 
+def stitch_dimension_csv():
+    out_dir = "your_outputs"
+    cand_a = os.path.join(out_dir, "dimension_context.csv")
+    cand_b = os.path.join(out_dir, "dimension_detailed.csv")
+    final = os.path.join(out_dir, "dimension.csv")
+    if os.path.exists(cand_a) and os.path.exists(cand_b):
+        newer = cand_a if os.path.getmtime(cand_a) > os.path.getmtime(cand_b) else cand_b
+        shutil.copy(newer, final)
+        print(f"[dimension] Chose file from: {newer}")
+    elif os.path.exists(cand_a):
+        shutil.copy(cand_a, final)
+        print(f"[dimension] Only found: {cand_a}")
+    elif os.path.exists(cand_b):
+        shutil.copy(cand_b, final)
+        print(f"[dimension] Only found: {cand_b}")
+
+
 def run_subset(subset: str, df: pd.DataFrame, default_client, escalation):
     budget = EscalationBudget(total_items=len(df))
     preds = []
@@ -112,6 +130,12 @@ def run_subset(subset: str, df: pd.DataFrame, default_client, escalation):
             p, w = "INSUFFICIENT", "mini"
         preds.append(p)
         who.append(w)
+        # Optional sleep to respect rate limits
+        sleep_sec = float(os.getenv("DQ_SLEEP_SEC", "0"))
+        if sleep_sec > 0:
+            time.sleep(sleep_sec)
+    if subset == "dimension":
+        stitch_dimension_csv()
     return preds, who, budget.used, budget.max_escalations
 
 

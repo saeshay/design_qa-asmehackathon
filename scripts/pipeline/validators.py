@@ -51,3 +51,28 @@ def good_retrieval(s: str, min_len=20) -> bool:
 
 def limit_ocr(s: str, limit=200) -> str:
     return (s or "")[:limit]
+
+# Additional helpers per spec
+def presence_yes_no(ans: str) -> str:
+    ans = (ans or "").strip().lower()
+    if ans.startswith("yes"):
+        return "yes"
+    elif ans.startswith("no"):
+        return "no"
+    return "INSUFFICIENT"
+
+
+def dimension_fn_template(ans: str) -> str:
+    lines = (ans or "").splitlines()
+    answer = None
+    for line in lines:
+        if line.lower().startswith("answer:"):
+            answer = line.split(":", 1)[-1].strip().lower()
+            if answer in ("yes", "no"):
+                return f"Explanation: ...\nAnswer: {answer}"
+    return "INSUFFICIENT"
+
+
+def retrieval_guard(ans: str) -> bool:
+    a = (ans or "").strip().lower()
+    return len(a) < 20 or "insufficient" in a

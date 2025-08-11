@@ -278,3 +278,34 @@ python -m scripts.run_pipeline_and_eval --subset definition --limit 20
 python -m scripts.run_pipeline_and_eval --subset retrieval  --limit 30
 python -m scripts.run_pipeline_and_eval
 ```
+
+## How to Run (Hybrid, Windows, Cheap Mode)
+
+pip install -r requirements.txt
+pip install openai anthropic
+
+Hybrid routing: GPT‑4o‑mini (cheap) → Claude 3.5 Sonnet (escalation)
+$env:DQ_PROVIDER = "hybrid"
+$env:OPENAI_API_KEY = "sk-..."
+$env:ANTHROPIC_API_KEY = "sk-ant-..."
+
+Optional: reduce image size & avoid rate limits
+$env:DQ_IMG_MAX_SIDE = "2048"
+$env:DQ_SLEEP_SEC = "0.3"
+$env:DQ_ESC_PCT_MAX = "0.10" # cap escalations at 10% globally
+
+Quick tests
+python -m scripts.run_pipeline_and_eval --subset retrieval --limit 20
+python -m scripts.run_pipeline_and_eval --subset definition --limit 20
+python -m scripts.run_pipeline_and_eval --subset presence --limit 40
+
+Hard subsets (allow a bit more escalation)
+$env:DQ_ESC_PCT_MAX = "0.20"
+python -m scripts.run_pipeline_and_eval --subset dimension --limit 30
+python -m scripts.run_pipeline_and_eval --subset functional
+
+Score everything (writes results.txt)
+python eval/full_evaluation.py --path_to_retrieval your_outputs/retrieval.csv \
+--path_to_compilation your_outputs/compilation.csv --path_to_definition your_outputs/definition.csv \
+--path_to_presence your_outputs/presence.csv --path_to_dimension your_outputs/dimension.csv \
+--path_to_functional_performance your_outputs/functional_performance.csv

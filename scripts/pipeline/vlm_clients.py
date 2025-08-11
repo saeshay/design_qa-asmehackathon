@@ -59,3 +59,48 @@ class AnthropicClient:
             if getattr(block, "type", "") == "text" and getattr(block, "text", ""):
                 return block.text.strip()
         return ""
+
+# -------- Additional VLM helpers (drop-in) ----------
+import io
+from PIL import Image
+
+def _prepare_image(image_path: str, max_side: int = None, prefer_jpeg: bool = True):
+    # Downscale so max(width, height) <= max_side (default from env DQ_IMG_MAX_SIDE=3072)
+    # Convert to JPEG if needed, quality ~85, return (mime, base64 string)
+    max_side = max_side or int(os.getenv("DQ_IMG_MAX_SIDE", "3072"))
+    ext = os.path.splitext(image_path)[-1].lower()
+    im = Image.open(image_path)
+    if max(im.size) > max_side:
+        ratio = max_side / max(im.size)
+        new_size = (int(im.size[0] * ratio), int(im.size[1] * ratio))
+        im = im.resize(new_size, Image.LANCZOS)
+    mime = "image/png" if ext in [".png"] else "image/jpeg"
+    if prefer_jpeg or mime == "image/png":
+        with io.BytesIO() as buf:
+            im.convert("RGB").save(buf, format="JPEG", quality=85)
+            data = buf.getvalue()
+        mime = "image/jpeg"
+    else:
+        with io.BytesIO() as buf:
+            im.save(buf, format="PNG")
+            data = buf.getvalue()
+    b64 = base64.b64encode(data).decode()
+    return mime, b64
+
+class OpenAIVLMClient:
+    def __init__(self, api_key):
+        self.api_key = api_key
+    def format_payload(self, image_path):
+        mime, b64 = _prepare_image(image_path)
+        return {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}}
+
+class AnthropicVLMClient:
+    def __init__(self, api_key):
+        self.api_key = api_key
+    def format_payload(self, image_path):
+        mime, b64 = _prepare_image(image_path)
+        return {"type": "image", "source": {"type": "base64", "media_type": mime, "data": b64}}
+
+class MockVLMClient:
+    def format_payload(self, image_path):
+        return {"type": "mock", "path": image_path}
