@@ -2,3 +2,4 @@ nltk
 rouge
 pandas
 sentence_transformers
+rank-bm25
