@@ -25,7 +25,7 @@ class RetrieverConfig:
     dense_model_name: str = "sentence-transformers/all-MiniLM-L6-v2"
     bm25_weight: float = 0.6
     dense_weight: float = 0.4
-    top_k: int = 200
+    top_k: int = 2
     whitelist_terms: Optional[List[str]] = None
     blacklist_terms: Optional[List[str]] = None
 
@@ -177,6 +177,11 @@ class RuleAwareRetriever:
         # Return as sorted list with stable order based on first occurrence in corpus
         ordered = sorted(list(expanded), key=lambda r: self.rules_df.index[self.rules_df["rule_num"] == r].min() if any(self.rules_df["rule_num"] == r) else 1e9)
         return ordered
+
+    def get_top_k_snippets(self, query: str, k: int = 2, char_limit: int = 200) -> List[str]:
+        idxs = self._hybrid_rank(query)[:k]
+        texts = [self.rules_df.iloc[i]["rule_text"] for i in idxs]
+        return [t[:char_limit] for t in texts]
 
     # Convenience for serialization during debugging
     def dump_index_stats(self) -> Dict[str, int]:

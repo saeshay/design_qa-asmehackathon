@@ -57,7 +57,13 @@ class RetrievalHead:
         df = pd.read_csv(in_csv)
         preds = []
         for idx, row in df.iterrows():
-            q = f"{self.system_prompt}\n{row['question']}"
+            context_snips = []
+            try:
+                context_snips = self.retriever.get_top_k_snippets(row['question'], k=2, char_limit=200)
+            except Exception:
+                context_snips = []
+            ctx = ("\n" + "\n".join(context_snips)) if context_snips else ""
+            q = f"{self.system_prompt}\n{row['question']}{ctx}"
             # Attempt exact lookup to produce verbatim rule text
             rn = None
             for token in row['question'].split():
@@ -123,7 +129,15 @@ class DefinitionHead:
         df = pd.read_csv(in_csv)
         preds = []
         for idx, row in df.iterrows():
-            q = f"{self.system_prompt}\n{row['question']}"
+            context_snips = []
+            try:
+                # Reuse retriever from orchestrator by lightweight inline prompt-only snippets via question text
+                # For definition, the question includes the task; we still add small context from rules (<=200 chars x2)
+                context_snips = self.retriever.get_top_k_snippets(row['question'], k=2, char_limit=200)  # type: ignore
+            except Exception:
+                context_snips = []
+            ctx = ("\n" + "\n".join(context_snips)) if context_snips else ""
+            q = f"{self.system_prompt}\n{row['question']}{ctx}"
             img = f"{images_dir}/{row['image']}"
             raw = _ask_with_cache(self.client, "definition", idx, q, image_path=img, max_tokens=16)
             norm = normalize_component_name(raw)
@@ -171,7 +185,13 @@ class DimensionHead:
         df = pd.read_csv(in_csv)
         preds = []
         for idx, row in df.iterrows():
-            q = f"{self.system_prompt}\n{row['question']}"
+            context_snips = []
+            try:
+                context_snips = self.retriever.get_top_k_snippets(row['question'], k=2, char_limit=200)  # type: ignore
+            except Exception:
+                context_snips = []
+            ctx = ("\n" + "\n".join(context_snips)) if context_snips else ""
+            q = f"{self.system_prompt}\n{row['question']}{ctx}"
             img = f"{images_dir}/{row['image']}"
             raw = _ask_with_cache(self.client, "dimension", idx, q, image_path=img, max_tokens=96)
             norm = normalize_explained_yes_no(raw)
@@ -195,7 +215,13 @@ class FunctionalHead:
         df = pd.read_csv(in_csv)
         preds = []
         for idx, row in df.iterrows():
-            q = f"{self.system_prompt}\n{row['question']}"
+            context_snips = []
+            try:
+                context_snips = self.retriever.get_top_k_snippets(row['question'], k=2, char_limit=200)  # type: ignore
+            except Exception:
+                context_snips = []
+            ctx = ("\n" + "\n".join(context_snips)) if context_snips else ""
+            q = f"{self.system_prompt}\n{row['question']}{ctx}"
             img = f"{images_dir}/{row['image']}"
             raw = _ask_with_cache(self.client, "functional", idx, q, image_path=img, max_tokens=96)
             norm = normalize_explained_yes_no(raw)
