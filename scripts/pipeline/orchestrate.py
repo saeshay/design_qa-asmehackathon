@@ -6,7 +6,6 @@ from typing import Optional
 import pandas as pd
 
 from .rule_retriever import RuleAwareRetriever, RetrieverConfig
-from .vlm_clients import MockClient, Ensemble
 from .task_heads import (
     RetrievalHead,
     CompilationHead,
@@ -14,7 +13,16 @@ from .task_heads import (
     PresenceHead,
     DimensionHead,
     FunctionalHead,
+    EscalationBudget,
+    answer_presence,
+    answer_definition,
+    answer_compilation,
+    answer_retrieval,
+    answer_dimension,
+    answer_functional,
 )
+from .vlm_clients import MockClient, OpenAIClient, AnthropicClient
+from .validators import limit_ocr
 
 
 @dataclass
@@ -51,40 +59,99 @@ def ensure_dir(path: str):
     os.makedirs(path, exist_ok=True)
 
 
-def run_all(paths: Paths):
+def build_client(provider: str):
+    provider = (provider or "mock").lower()
+    if provider == "openai":
+        return OpenAIClient(os.getenv("OPENAI_MODEL", "gpt-4o-mini"))
+    if provider == "anthropic":
+        return AnthropicClient(os.getenv("ANTHROPIC_MODEL", "claude-3-haiku-20240307"))
+    return MockClient()
+
+
+def get_clients():
+    provider = os.getenv("DQ_PROVIDER", "mock").lower()
+
+    if provider == "hybrid":
+        # OpenAI default, Anthropic escalation
+        default_client = OpenAIClient(model=os.getenv("DQ_OPENAI_MODEL", "gpt-4o-mini"))
+        escalation = AnthropicClient(model=os.getenv("DQ_ANTHROPIC_BIG", "claude-3-5-sonnet-20240620"))
+        return default_client, escalation
+
+    default_client = MockClient()
+    escalation = None
+    if provider == "openai":
+        default_client = OpenAIClient(model=os.getenv("DQ_OPENAI_MODEL", "gpt-4o-mini"))
+        escalation = OpenAIClient(model=os.getenv("DQ_OPENAI_BIG", "gpt-4o"))
+    elif provider == "anthropic":
+        default_client = AnthropicClient(model=os.getenv("DQ_ANTHROPIC_MODEL", "claude-3-haiku-20240307"))
+        escalation = AnthropicClient(model=os.getenv("DQ_ANTHROPIC_BIG", "claude-3-5-sonnet-20240620"))
+    return default_client, escalation
+
+
+def run_subset(subset: str, df: pd.DataFrame, default_client, escalation):
+    budget = EscalationBudget(total_items=len(df))
+    preds = []
+    who = []
+    for _, row in df.iterrows():
+        # Trim any OCR payload
+        if "ocr" in row and isinstance(row["ocr"], str):
+            row["ocr"] = limit_ocr(row["ocr"], 200)
+        if subset == "presence":
+            p, w = answer_presence(row, default_client, escalation, budget)
+        elif subset == "definition":
+            p, w = answer_definition(row, default_client, escalation, budget)
+        elif subset == "compilation":
+            p, w = answer_compilation(row, default_client, escalation, budget)
+        elif subset == "retrieval":
+            p, w = answer_retrieval(row, default_client, escalation, budget)
+        elif subset == "dimension":
+            p, w = answer_dimension(row, default_client, escalation, budget)
+        elif subset == "functional":
+            p, w = answer_functional(row, default_client, escalation, budget)
+        else:
+            p, w = "INSUFFICIENT", "mini"
+        preds.append(p)
+        who.append(w)
+    return preds, who, budget.used, budget.max_escalations
+
+
+def run_all(paths: Paths, provider: Optional[str] = None):
     ensure_dir(paths.out_dir)
 
-    # Clients and ensemble: plug in real clients here (Claude/GPT-4o) and set confidences
-    clients = [MockClient("vlm_a"), MockClient("vlm_b")]
-    ensemble = Ensemble(clients)
+    # Select client via explicit provider override or env-driven get_clients
+    if provider is not None:
+        default_client = build_client(provider)
+        escalation = None
+    else:
+        default_client, escalation = get_clients()
 
     retriever = RuleAwareRetriever(RetrieverConfig())
 
     # Rule extraction
-    RetrievalHead(ensemble, retriever, SYSTEM_PROMPTS["retrieval"]).run(
+    RetrievalHead(default_client, retriever, SYSTEM_PROMPTS["retrieval"], escalation=escalation).run(
         paths.retrieval_csv, os.path.join(paths.out_dir, "retrieval.csv")
     )
-    CompilationHead(ensemble, retriever, SYSTEM_PROMPTS["compilation"]).run(
+    CompilationHead(default_client, retriever, SYSTEM_PROMPTS["compilation"], escalation=escalation).run(
         paths.compilation_csv, os.path.join(paths.out_dir, "compilation.csv")
     )
 
     # Rule comprehension
-    DefinitionHead(ensemble, SYSTEM_PROMPTS["definition"]).run(
+    DefinitionHead(default_client, SYSTEM_PROMPTS["definition"], escalation=escalation).run(
         paths.definition_csv, paths.definition_images_dir, os.path.join(paths.out_dir, "definition.csv")
     )
-    PresenceHead(ensemble, SYSTEM_PROMPTS["presence"]).run(
+    PresenceHead(default_client, SYSTEM_PROMPTS["presence"], escalation=escalation).run(
         paths.presence_csv, paths.presence_images_dir, os.path.join(paths.out_dir, "presence.csv")
     )
 
-    # Rule compliance (two dimension subsets averaged by evaluator; we will concat into one CSV for each subset run)
+    # Rule compliance
     for subset_name, dim_csv, dim_dir in [
         ("dimension_context", paths.dimension_context_csv, paths.dimension_context_images_dir),
         ("dimension_detailed", paths.dimension_detailed_csv, paths.dimension_detailed_images_dir),
     ]:
         out_path = os.path.join(paths.out_dir, f"{subset_name}.csv")
-        DimensionHead(ensemble, SYSTEM_PROMPTS["dimension"]).run(dim_csv, dim_dir, out_path)
+        DimensionHead(default_client, SYSTEM_PROMPTS["dimension"], escalation=escalation).run(dim_csv, dim_dir, out_path)
 
-    FunctionalHead(ensemble, SYSTEM_PROMPTS["functional"]).run(
+    FunctionalHead(default_client, SYSTEM_PROMPTS["functional"], escalation=escalation).run(
         paths.functional_csv, paths.functional_images_dir, os.path.join(paths.out_dir, "functional_performance.csv")
     )
 
@@ -92,6 +159,7 @@ def run_all(paths: Paths):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--run", action="store_true", help="Run the full pipeline")
+    parser.add_argument("--provider", choices=["mock", "openai", "anthropic"], default=None)
     args = parser.parse_args()
     if args.run:
-        run_all(Paths())
+        run_all(Paths(), provider=args.provider)

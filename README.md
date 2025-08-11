@@ -214,3 +214,67 @@ This generates CSVs in `your_outputs/` for all subsets, concatenates dimension s
 - A format fixer `fix_eval_columns.py` normalizes yes/no and explanation/answer structure to avoid penalties.
 
 To integrate real multimodal LLMs, implement concrete clients in `scripts/pipeline/vlm_clients.py` and swap them into the ensemble.
+
+## Cheap Real-Model Run
+
+PowerShell (Windows):
+
+```powershell
+pip install -r requirements.txt
+pip install openai anthropic
+
+$env:DQ_PROVIDER = "openai"          # or "anthropic" or "mock"
+$env:OPENAI_API_KEY = "<key>"        # if openai
+$env:DQ_OPENAI_MODEL = "gpt-4o-mini"
+$env:DQ_OPENAI_BIG   = "gpt-4o"
+
+python -m scripts.run_pipeline_and_eval --subset definition --limit 20
+python -m scripts.run_pipeline_and_eval --subset retrieval  --limit 30
+python -m scripts.run_pipeline_and_eval
+```
+
+Cost tips: top-2 rule snippets, ≤200-char OCR, 32–96 max_tokens, and cache enabled by default.
+
+## Config & Cost Controls
+
+```ruby
+# Provider (mock | openai | anthropic)
+$env:DQ_PROVIDER = "openai"
+$env:OPENAI_API_KEY = "<key>"
+$env:DQ_OPENAI_MODEL = "gpt-4o-mini"
+$env:DQ_OPENAI_BIG   = "gpt-4o"
+
+# Escalation budget (pick one)
+$env:DQ_ESC_PCT_MAX = "0.10"    # <= 10% of items may escalate (default)
+# or
+$env:DQ_ESC_ABS_MAX = "150"     # hard cap count across a subset
+```
+
+### Hybrid routing (recommended)
+Cheap default → GPT-4o-mini, escalate → Claude 3.5 Sonnet only when needed.
+
+Windows PowerShell
+
+```powershell
+pip install -r requirements.txt
+pip install openai anthropic
+
+# Pick hybrid
+$env:DQ_PROVIDER = "hybrid"
+
+# OpenAI (default tier)
+$env:OPENAI_API_KEY   = "<your openai key>"
+$env:DQ_OPENAI_MODEL  = "gpt-4o-mini"
+
+# Anthropic (big gun for escalations)
+$env:ANTHROPIC_API_KEY = "<your anthropic key>"
+$env:DQ_ANTHROPIC_BIG  = "claude-3-5-sonnet-20240620"
+
+# Optional: cap escalations (10% default)
+$env:DQ_ESC_PCT_MAX = "0.10"   # or set DQ_ESC_ABS_MAX to a hard count
+
+# Run small then full
+python -m scripts.run_pipeline_and_eval --subset definition --limit 20
+python -m scripts.run_pipeline_and_eval --subset retrieval  --limit 30
+python -m scripts.run_pipeline_and_eval
+```

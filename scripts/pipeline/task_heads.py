@@ -2,6 +2,7 @@ import ast
 from dataclasses import dataclass
 from typing import Optional, List
 
+import os
 import pandas as pd
 
 from .format_checker import (
@@ -10,9 +11,19 @@ from .format_checker import (
     normalize_rule_list,
     normalize_component_name,
     normalize_explained_yes_no,
+    is_short_phrase,
 )
-from .vlm_clients import Ensemble, ModelOutput
 from .rule_retriever import RuleAwareRetriever
+from .cache import make_key, get as cache_get, put as cache_put
+from .validators import (
+    force_yes_no as v_force_yes_no,
+    is_yes_no as v_is_yes_no,
+    is_short_phrase as v_is_short_phrase,
+    good_compilation as v_good_compilation,
+    has_expl_and_answer as v_has_expl_and_answer,
+    good_retrieval as v_good_retrieval,
+    extract_rule_ids as v_extract_rule_ids,
+)
 
 
 @dataclass
@@ -25,18 +36,62 @@ class SubsetPrompts:
     functional_system: str
 
 
+def _client_meta(client) -> tuple:
+    provider = getattr(client, "__class__", type(client)).__name__.replace("Client", "").lower() or "unknown"
+    model = getattr(client, "model", "") or ""
+    return provider, model
+
+
+class EscalationBudget:
+    """Controls how many items we may escalate. Defaults: <=10% or explicit cap."""
+    def __init__(self, total_items: int):
+        self.total = max(1, int(total_items))
+        cap_pct = float(os.getenv("DQ_ESC_PCT_MAX", "0.10"))
+        cap_abs = os.getenv("DQ_ESC_ABS_MAX")
+        self.max_escalations = int(cap_abs) if cap_abs else int(self.total * cap_pct + 0.5)
+        self.used = 0
+
+    def allow(self) -> bool:
+        return self.used < self.max_escalations
+
+    def consume(self):
+        self.used += 1
+
+
+def _ask_with_cache(client, subset, qid, prompt, image_path=None, max_tokens=64):
+    provider_env = os.getenv("DQ_PROVIDER", "mock")
+    model = getattr(client, "model", "unknown")
+    key = make_key(subset, qid, provider_env, model, prompt + (image_path or ""))
+    cached = cache_get(key)
+    if cached is not None:
+        return cached
+    ans = client.answer(prompt, image_path=image_path, max_tokens=max_tokens)
+    cache_put(key, ans)
+    return ans
+
+
 class RetrievalHead:
-    def __init__(self, ensemble: Ensemble, retriever: RuleAwareRetriever, system_prompt: str):
-        self.ensemble = ensemble
+    def __init__(self, client, retriever: RuleAwareRetriever, system_prompt: str, escalation=None):
+        self.client = client
+        self.escalation = escalation
         self.retriever = retriever
         self.system_prompt = system_prompt
+        self.provider, self.model = _client_meta(client)
 
-    def run(self, in_csv: str, out_csv: str):
+    def run(self, in_csv: str, out_csv: str, limit: Optional[int] = None):
         df = pd.read_csv(in_csv)
+        if limit is not None:
+            df = df.head(limit)
+        budget = EscalationBudget(len(df))
         preds = []
-        for _, row in df.iterrows():
-            q = f"{self.system_prompt}\n{row['question']}"
-            # Add short context: rule number match
+        for idx, row in df.iterrows():
+            context_snips = []
+            try:
+                context_snips = self.retriever.get_top_k_snippets(row['question'], k=2, char_limit=200)
+            except Exception:
+                context_snips = []
+            ctx = ("\n" + "\n".join(context_snips)) if context_snips else ""
+            q = f"{self.system_prompt}\n{row['question']}{ctx}"
             # Attempt exact lookup to produce verbatim rule text
             rn = None
             for token in row['question'].split():
@@ -46,103 +101,315 @@ class RetrievalHead:
             verbatim = self.retriever.get_rule_text(rn) if rn else None
             if verbatim:
                 raw = verbatim
-            else:
-                raw = self.ensemble.query(q).text
-            preds.append(normalize_rule_text(raw))
+                preds.append(normalize_rule_text(raw))
+                continue
+            raw = _ask_with_cache(self.client, "retrieval", idx, q, max_tokens=64)
+            norm = normalize_rule_text(raw)
+            if not v_good_retrieval(norm) and self.escalation and budget.allow():
+                raw2 = _ask_with_cache(self.escalation, "retrieval", idx, q, max_tokens=64)
+                norm2 = normalize_rule_text(raw2)
+                if v_good_retrieval(norm2):
+                    budget.consume()
+                    preds.append(norm2)
+                    continue
+            preds.append(norm if v_good_retrieval(norm) else "INSUFFICIENT")
         df_out = df.copy()
         df_out["model_prediction"] = preds
         df_out.to_csv(out_csv, index=False)
 
 
 class CompilationHead:
-    def __init__(self, ensemble: Ensemble, retriever: RuleAwareRetriever, system_prompt: str):
-        self.ensemble = ensemble
+    def __init__(self, client, retriever: RuleAwareRetriever, system_prompt: str, escalation=None):
+        self.client = client
+        self.escalation = escalation
         self.retriever = retriever
         self.system_prompt = system_prompt
+        self.provider, self.model = _client_meta(client)
 
-    def run(self, in_csv: str, out_csv: str):
+    def run(self, in_csv: str, out_csv: str, limit: Optional[int] = None):
         df = pd.read_csv(in_csv)
+        if limit is not None:
+            df = df.head(limit)
+        budget = EscalationBudget(len(df))
         preds = []
-        for _, row in df.iterrows():
-            q = f"{self.system_prompt}\n{row['question']}"
+        for idx, row in df.iterrows():
             # Parse term inside backticks
             term = row['question'].split('`')
             term = term[1] if len(term) >= 2 else row['question']
             rules = self.retriever.find_relevant_rules(term)
             raw = ", ".join(rules)
-            preds.append(normalize_rule_list(raw))
+            if not v_good_compilation(raw) and self.client:
+                q = (
+                    "List only relevant rule numbers separated by commas (e.g., 'T.7.1, T.7.2'). No extra words.\n"
+                    f"Question: {row['question']}\n"
+                    "Answer:"
+                )
+                raw2 = _ask_with_cache(self.client, "compilation", idx, q, max_tokens=64)
+                if not v_good_compilation(raw2) and self.escalation and budget.allow():
+                    raw3 = _ask_with_cache(self.escalation, "compilation", idx, q, max_tokens=64)
+                    if v_good_compilation(raw3):
+                        budget.consume()
+                        raw = raw3
+                else:
+                    raw = raw2
+            preds.append(normalize_rule_list(raw) if v_good_compilation(raw) else "")
         df_out = df.copy()
         df_out["model_prediction"] = preds
         df_out.to_csv(out_csv, index=False)
 
 
 class DefinitionHead:
-    def __init__(self, ensemble: Ensemble, system_prompt: str):
-        self.ensemble = ensemble
+    def __init__(self, client, system_prompt: str, escalation=None):
+        self.client = client
+        self.escalation = escalation
         self.system_prompt = system_prompt
+        self.provider, self.model = _client_meta(client)
 
-    def run(self, in_csv: str, images_dir: str, out_csv: str):
+    def run(self, in_csv: str, images_dir: str, out_csv: str, limit: Optional[int] = None):
         df = pd.read_csv(in_csv)
+        if limit is not None:
+            df = df.head(limit)
+        budget = EscalationBudget(len(df))
         preds = []
-        for _, row in df.iterrows():
-            q = f"{self.system_prompt}\n{row['question']}"
+        for idx, row in df.iterrows():
+            ctx = ""
+            q = (
+                "Identify the highlighted CAD component; return a short noun phrase only.\n"
+                f"Question: {row['question']}\n"
+                "Answer:"
+            )
             img = f"{images_dir}/{row['image']}"
-            raw = self.ensemble.query(q, img).text
-            preds.append(normalize_component_name(raw))
+            ans = _ask_with_cache(self.client, "definition", idx, q, image_path=img, max_tokens=16).strip()
+            if not v_is_short_phrase(ans) and self.escalation and budget.allow():
+                ans2 = _ask_with_cache(self.escalation, "definition", idx, q, image_path=img, max_tokens=16).strip()
+                if v_is_short_phrase(ans2):
+                    budget.consume()
+                    preds.append(normalize_component_name(ans2))
+                    continue
+            preds.append(normalize_component_name(ans if v_is_short_phrase(ans) else "INSUFFICIENT"))
         df_out = df.copy()
         df_out["model_prediction"] = preds
         df_out.to_csv(out_csv, index=False)
 
 
 class PresenceHead:
-    def __init__(self, ensemble: Ensemble, system_prompt: str):
-        self.ensemble = ensemble
+    def __init__(self, client, system_prompt: str, escalation=None):
+        self.client = client
+        self.escalation = escalation
         self.system_prompt = system_prompt
+        self.provider, self.model = _client_meta(client)
 
-    def run(self, in_csv: str, images_dir: str, out_csv: str):
+    def run(self, in_csv: str, images_dir: str, out_csv: str, limit: Optional[int] = None):
         df = pd.read_csv(in_csv)
+        if limit is not None:
+            df = df.head(limit)
+        budget = EscalationBudget(len(df))
         preds = []
-        for _, row in df.iterrows():
-            q = f"{self.system_prompt}\n{row['question']}"
+        for idx, row in df.iterrows():
+            q = (
+                "Answer strictly with 'yes' or 'no'.\n"
+                f"Question: {row['question']}\n"
+                "Answer:"
+            )
             img = f"{images_dir}/{row['image']}"
-            raw = self.ensemble.query(q, img).text
-            preds.append(normalize_yes_no(raw))
+            ans = v_force_yes_no(_ask_with_cache(self.client, "presence", idx, q, image_path=img, max_tokens=32))
+            if not v_is_yes_no(ans) and self.escalation and budget.allow():
+                ans2 = v_force_yes_no(_ask_with_cache(self.escalation, "presence", idx, q, image_path=img, max_tokens=32))
+                if v_is_yes_no(ans2):
+                    budget.consume()
+                    preds.append(ans2)
+                    continue
+            preds.append(ans if v_is_yes_no(ans) else "no")
         df_out = df.copy()
         df_out["model_prediction"] = preds
         df_out.to_csv(out_csv, index=False)
 
 
 class DimensionHead:
-    def __init__(self, ensemble: Ensemble, system_prompt: str):
-        self.ensemble = ensemble
+    def __init__(self, client, system_prompt: str, escalation=None):
+        self.client = client
+        self.escalation = escalation
         self.system_prompt = system_prompt
+        self.provider, self.model = _client_meta(client)
 
-    def run(self, in_csv: str, images_dir: str, out_csv: str):
+    def run(self, in_csv: str, images_dir: str, out_csv: str, limit: Optional[int] = None):
         df = pd.read_csv(in_csv)
+        if limit is not None:
+            df = df.head(limit)
+        budget = EscalationBudget(len(df))
         preds = []
-        for _, row in df.iterrows():
-            q = f"{self.system_prompt}\n{row['question']}"
+        for idx, row in df.iterrows():
+            q = (
+                "Use the drawing to judge compliance. Respond as:\n"
+                "Explanation: <one short sentence>\n"
+                "Answer: yes/no\n"
+                f"Question: {row['question']}\n"
+                "Explanation:"
+            )
             img = f"{images_dir}/{row['image']}"
-            raw = self.ensemble.query(q, img).text
-            preds.append(normalize_explained_yes_no(raw))
+            ans = _ask_with_cache(self.client, "dimension", idx, q, image_path=img, max_tokens=96)
+            ok = v_has_expl_and_answer(ans) and v_is_yes_no(v_force_yes_no(ans))
+            if not ok and self.escalation and budget.allow():
+                ans2 = _ask_with_cache(self.escalation, "dimension", idx, q, image_path=img, max_tokens=96)
+                ok2 = v_has_expl_and_answer(ans2) and v_is_yes_no(v_force_yes_no(ans2))
+                if ok2:
+                    budget.consume()
+                    preds.append(normalize_explained_yes_no(ans2))
+                    continue
+            preds.append(normalize_explained_yes_no(ans) if ok else "Explanation: insufficient\nAnswer: no")
         df_out = df.copy()
         df_out["model_prediction"] = preds
         df_out.to_csv(out_csv, index=False)
 
 
 class FunctionalHead:
-    def __init__(self, ensemble: Ensemble, system_prompt: str):
-        self.ensemble = ensemble
+    def __init__(self, client, system_prompt: str, escalation=None):
+        self.client = client
+        self.escalation = escalation
         self.system_prompt = system_prompt
+        self.provider, self.model = _client_meta(client)
 
-    def run(self, in_csv: str, images_dir: str, out_csv: str):
+    def run(self, in_csv: str, images_dir: str, out_csv: str, limit: Optional[int] = None):
         df = pd.read_csv(in_csv)
+        if limit is not None:
+            df = df.head(limit)
+        budget = EscalationBudget(len(df))
         preds = []
-        for _, row in df.iterrows():
-            q = f"{self.system_prompt}\n{row['question']}"
+        for idx, row in df.iterrows():
+            q = (
+                "Use the image and rule to judge compliance. Respond as:\n"
+                "Explanation: <one short sentence>\n"
+                "Answer: yes/no\n"
+                f"Question: {row['question']}\n"
+                "Explanation:"
+            )
             img = f"{images_dir}/{row['image']}"
-            raw = self.ensemble.query(q, img).text
-            preds.append(normalize_explained_yes_no(raw))
+            ans = _ask_with_cache(self.client, "functional", idx, q, image_path=img, max_tokens=96)
+            ok = v_has_expl_and_answer(ans) and v_is_yes_no(v_force_yes_no(ans))
+            if not ok and self.escalation and budget.allow():
+                ans2 = _ask_with_cache(self.escalation, "functional", idx, q, image_path=img, max_tokens=96)
+                ok2 = v_has_expl_and_answer(ans2) and v_is_yes_no(v_force_yes_no(ans2))
+                if ok2:
+                    budget.consume()
+                    preds.append(normalize_explained_yes_no(ans2))
+                    continue
+            preds.append(normalize_explained_yes_no(ans) if ok else "Explanation: insufficient\nAnswer: no")
         df_out = df.copy()
         df_out["model_prediction"] = preds
         df_out.to_csv(out_csv, index=False)
+
+
+# Per-row answer helpers for orchestrator-driven runs
+
+def answer_presence(row, default_client, escalation, budget: EscalationBudget):
+    subset = "presence"
+    qid = row.get("qid", row.get("id", row.get("index", "")))
+    img = row.get("image_path")
+    prompt = (
+        "Answer strictly with 'yes' or 'no'.\n"
+        f"Question: {row['question']}\n"
+        "Answer:"
+    )
+    ans = v_force_yes_no(_ask_with_cache(default_client, subset, qid, prompt, image_path=img, max_tokens=32))
+    if not v_is_yes_no(ans) and escalation and budget.allow():
+        ans2 = v_force_yes_no(_ask_with_cache(escalation, subset, qid, prompt, image_path=img, max_tokens=32))
+        if v_is_yes_no(ans2):
+            budget.consume()
+            return ans2, "escalation"
+    return (ans if v_is_yes_no(ans) else "no"), "mini"
+
+
+def answer_definition(row, default_client, escalation, budget: EscalationBudget):
+    subset = "definition"
+    qid = row.get("qid", row.get("id", row.get("index", "")))
+    img = row.get("image_path")
+    prompt = (
+        "Identify the highlighted CAD component; return a short noun phrase only.\n"
+        f"Question: {row['question']}\n"
+        "Answer:"
+    )
+    ans = _ask_with_cache(default_client, subset, qid, prompt, image_path=img, max_tokens=16).strip()
+    if not v_is_short_phrase(ans) and escalation and budget.allow():
+        ans2 = _ask_with_cache(escalation, subset, qid, prompt, image_path=img, max_tokens=16).strip()
+        if v_is_short_phrase(ans2):
+            budget.consume()
+            return normalize_component_name(ans2), "escalation"
+    return normalize_component_name(ans if v_is_short_phrase(ans) else "INSUFFICIENT"), "mini"
+
+
+def answer_compilation(row, default_client, escalation, budget: EscalationBudget):
+    subset = "compilation"
+    qid = row.get("qid", row.get("id", row.get("index", "")))
+    prompt = (
+        "List only relevant rule numbers separated by commas (e.g., 'T.7.1, T.7.2'). No extra words.\n"
+        f"Question: {row['question']}\n"
+        "Answer:"
+    )
+    ans = _ask_with_cache(default_client, subset, qid, prompt, max_tokens=64)
+    if not v_good_compilation(ans) and escalation and budget.allow():
+        ans2 = _ask_with_cache(escalation, subset, qid, prompt, max_tokens=64)
+        if v_good_compilation(ans2):
+            budget.consume()
+            return normalize_rule_list(ans2), "escalation"
+    return (normalize_rule_list(ans) if v_good_compilation(ans) else ""), "mini"
+
+
+def answer_retrieval(row, default_client, escalation, budget: EscalationBudget):
+    subset = "retrieval"
+    qid = row.get("qid", row.get("id", row.get("index", "")))
+    prompt = (
+        "Return exactly the text of the requested rule and nothing else.\n"
+        f"Question: {row['question']}\n"
+        "Answer:"
+    )
+    ans = _ask_with_cache(default_client, subset, qid, prompt, max_tokens=64)
+    if not v_good_retrieval(ans) and escalation and budget.allow():
+        ans2 = _ask_with_cache(escalation, subset, qid, prompt, max_tokens=64)
+        if v_good_retrieval(ans2):
+            budget.consume()
+            return normalize_rule_text(ans2), "escalation"
+    return (normalize_rule_text(ans) if v_good_retrieval(ans) else "INSUFFICIENT"), "mini"
+
+
+def answer_dimension(row, default_client, escalation, budget: EscalationBudget):
+    subset = "dimension"
+    qid = row.get("qid", row.get("id", row.get("index", "")))
+    img = row.get("image_path")
+    prompt = (
+        "Use the drawing to judge compliance. Respond as:\n"
+        "Explanation: <one short sentence>\n"
+        "Answer: yes/no\n"
+        f"Question: {row['question']}\n"
+        "Explanation:"
+    )
+    ans = _ask_with_cache(default_client, subset, qid, prompt, image_path=img, max_tokens=96)
+    ok = v_has_expl_and_answer(ans) and v_is_yes_no(v_force_yes_no(ans))
+    if not ok and escalation and budget.allow():
+        ans2 = _ask_with_cache(escalation, subset, qid, prompt, image_path=img, max_tokens=96)
+        ok2 = v_has_expl_and_answer(ans2) and v_is_yes_no(v_force_yes_no(ans2))
+        if ok2:
+            budget.consume()
+            return normalize_explained_yes_no(ans2), "escalation"
+    return (normalize_explained_yes_no(ans) if ok else "Explanation: insufficient\nAnswer: no"), "mini"
+
+
+def answer_functional(row, default_client, escalation, budget: EscalationBudget):
+    subset = "functional"
+    qid = row.get("qid", row.get("id", row.get("index", "")))
+    img = row.get("image_path")
+    prompt = (
+        "Use the image and rule to judge compliance. Respond as:\n"
+        "Explanation: <one short sentence>\n"
+        "Answer: yes/no\n"
+        f"Question: {row['question']}\n"
+        "Explanation:"
+    )
+    ans = _ask_with_cache(default_client, subset, qid, prompt, image_path=img, max_tokens=96)
+    ok = v_has_expl_and_answer(ans) and v_is_yes_no(v_force_yes_no(ans))
+    if not ok and escalation and budget.allow():
+        ans2 = _ask_with_cache(escalation, subset, qid, prompt, image_path=img, max_tokens=96)
+        ok2 = v_has_expl_and_answer(ans2) and v_is_yes_no(v_force_yes_no(ans2))
+        if ok2:
+            budget.consume()
+            return normalize_explained_yes_no(ans2), "escalation"
+    return (normalize_explained_yes_no(ans) if ok else "Explanation: insufficient\nAnswer: no"), "mini"

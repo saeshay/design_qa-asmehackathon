@@ -96,3 +96,8 @@ def normalize_explained_yes_no(s: str) -> str:
     explanation_text = explanation_text or ""
     explanation_text = clamp_len(explanation_text)
     return f"Explanation: {explanation_text}\nAnswer: {yn}"
+
+
+def is_short_phrase(s: str, max_words: int = 4) -> bool:
+    words = re.findall(r"[A-Za-z0-9\-]+", s or "")
+    return 1 <= len(words) <= max_words
