@@ -297,3 +297,119 @@ class FunctionalHead:
         df_out = df.copy()
         df_out["model_prediction"] = preds
         df_out.to_csv(out_csv, index=False)
+
+
+# Per-row answer helpers for orchestrator-driven runs
+
+def answer_presence(row, default_client, escalation, budget: EscalationBudget):
+    subset = "presence"
+    qid = row.get("qid", row.get("id", row.get("index", "")))
+    img = row.get("image_path")
+    prompt = (
+        "Answer strictly with 'yes' or 'no'.\n"
+        f"Question: {row['question']}\n"
+        "Answer:"
+    )
+    ans = v_force_yes_no(_ask_with_cache(default_client, subset, qid, prompt, image_path=img, max_tokens=32))
+    if not v_is_yes_no(ans) and escalation and budget.allow():
+        ans2 = v_force_yes_no(_ask_with_cache(escalation, subset, qid, prompt, image_path=img, max_tokens=32))
+        if v_is_yes_no(ans2):
+            budget.consume()
+            return ans2
+    return ans if v_is_yes_no(ans) else "no"
+
+
+def answer_definition(row, default_client, escalation, budget: EscalationBudget):
+    subset = "definition"
+    qid = row.get("qid", row.get("id", row.get("index", "")))
+    img = row.get("image_path")
+    prompt = (
+        "Identify the highlighted CAD component; return a short noun phrase only.\n"
+        f"Question: {row['question']}\n"
+        "Answer:"
+    )
+    ans = _ask_with_cache(default_client, subset, qid, prompt, image_path=img, max_tokens=16).strip()
+    if not v_is_short_phrase(ans) and escalation and budget.allow():
+        ans2 = _ask_with_cache(escalation, subset, qid, prompt, image_path=img, max_tokens=16).strip()
+        if v_is_short_phrase(ans2):
+            budget.consume()
+            return normalize_component_name(ans2)
+    return normalize_component_name(ans if v_is_short_phrase(ans) else "INSUFFICIENT")
+
+
+def answer_compilation(row, default_client, escalation, budget: EscalationBudget):
+    subset = "compilation"
+    qid = row.get("qid", row.get("id", row.get("index", "")))
+    prompt = (
+        "List only relevant rule numbers separated by commas (e.g., 'T.7.1, T.7.2'). No extra words.\n"
+        f"Question: {row['question']}\n"
+        "Answer:"
+    )
+    ans = _ask_with_cache(default_client, subset, qid, prompt, max_tokens=64)
+    if not v_good_compilation(ans) and escalation and budget.allow():
+        ans2 = _ask_with_cache(escalation, subset, qid, prompt, max_tokens=64)
+        if v_good_compilation(ans2):
+            budget.consume()
+            ans = ans2
+    return normalize_rule_list(ans) if v_good_compilation(ans) else ""
+
+
+def answer_retrieval(row, default_client, escalation, budget: EscalationBudget):
+    subset = "retrieval"
+    qid = row.get("qid", row.get("id", row.get("index", "")))
+    prompt = (
+        "Return exactly the text of the requested rule and nothing else.\n"
+        f"Question: {row['question']}\n"
+        "Answer:"
+    )
+    ans = _ask_with_cache(default_client, subset, qid, prompt, max_tokens=64)
+    if not v_good_retrieval(ans) and escalation and budget.allow():
+        ans2 = _ask_with_cache(escalation, subset, qid, prompt, max_tokens=64)
+        if v_good_retrieval(ans2):
+            budget.consume()
+            return normalize_rule_text(ans2)
+    return normalize_rule_text(ans) if v_good_retrieval(ans) else "INSUFFICIENT"
+
+
+def answer_dimension(row, default_client, escalation, budget: EscalationBudget):
+    subset = "dimension"
+    qid = row.get("qid", row.get("id", row.get("index", "")))
+    img = row.get("image_path")
+    prompt = (
+        "Use the drawing to judge compliance. Respond as:\n"
+        "Explanation: <one short sentence>\n"
+        "Answer: yes/no\n"
+        f"Question: {row['question']}\n"
+        "Explanation:"
+    )
+    ans = _ask_with_cache(default_client, subset, qid, prompt, image_path=img, max_tokens=96)
+    ok = v_has_expl_and_answer(ans) and v_is_yes_no(v_force_yes_no(ans))
+    if not ok and escalation and budget.allow():
+        ans2 = _ask_with_cache(escalation, subset, qid, prompt, image_path=img, max_tokens=96)
+        ok2 = v_has_expl_and_answer(ans2) and v_is_yes_no(v_force_yes_no(ans2))
+        if ok2:
+            budget.consume()
+            return normalize_explained_yes_no(ans2)
+    return normalize_explained_yes_no(ans) if ok else "Explanation: insufficient\nAnswer: no"
+
+
+def answer_functional(row, default_client, escalation, budget: EscalationBudget):
+    subset = "functional"
+    qid = row.get("qid", row.get("id", row.get("index", "")))
+    img = row.get("image_path")
+    prompt = (
+        "Use the image and rule to judge compliance. Respond as:\n"
+        "Explanation: <one short sentence>\n"
+        "Answer: yes/no\n"
+        f"Question: {row['question']}\n"
+        "Explanation:"
+    )
+    ans = _ask_with_cache(default_client, subset, qid, prompt, image_path=img, max_tokens=96)
+    ok = v_has_expl_and_answer(ans) and v_is_yes_no(v_force_yes_no(ans))
+    if not ok and escalation and budget.allow():
+        ans2 = _ask_with_cache(escalation, subset, qid, prompt, image_path=img, max_tokens=96)
+        ok2 = v_has_expl_and_answer(ans2) and v_is_yes_no(v_force_yes_no(ans2))
+        if ok2:
+            budget.consume()
+            return normalize_explained_yes_no(ans2)
+    return normalize_explained_yes_no(ans) if ok else "Explanation: insufficient\nAnswer: no"

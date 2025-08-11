@@ -13,8 +13,16 @@ from .task_heads import (
     PresenceHead,
     DimensionHead,
     FunctionalHead,
+    EscalationBudget,
+    answer_presence,
+    answer_definition,
+    answer_compilation,
+    answer_retrieval,
+    answer_dimension,
+    answer_functional,
 )
 from .vlm_clients import MockClient, OpenAIClient, AnthropicClient
+from .validators import limit_ocr
 
 
 @dataclass
@@ -71,6 +79,31 @@ def get_clients():
         default_client = AnthropicClient(model=os.getenv("DQ_ANTHROPIC_MODEL", "claude-3-haiku-20240307"))
         escalation = AnthropicClient(model=os.getenv("DQ_ANTHROPIC_BIG", "claude-3-5-sonnet-20240620"))
     return default_client, escalation
+
+
+def run_subset(subset: str, df: pd.DataFrame, default_client, escalation):
+    budget = EscalationBudget(total_items=len(df))
+    preds = []
+    for _, row in df.iterrows():
+        # Trim any OCR payload
+        if "ocr" in row and isinstance(row["ocr"], str):
+            row["ocr"] = limit_ocr(row["ocr"], 200)
+        if subset == "presence":
+            p = answer_presence(row, default_client, escalation, budget)
+        elif subset == "definition":
+            p = answer_definition(row, default_client, escalation, budget)
+        elif subset == "compilation":
+            p = answer_compilation(row, default_client, escalation, budget)
+        elif subset == "retrieval":
+            p = answer_retrieval(row, default_client, escalation, budget)
+        elif subset == "dimension":
+            p = answer_dimension(row, default_client, escalation, budget)
+        elif subset == "functional":
+            p = answer_functional(row, default_client, escalation, budget)
+        else:
+            p = "INSUFFICIENT"
+        preds.append(p)
+    return preds, budget.used, budget.max_escalations
 
 
 def run_all(paths: Paths, provider: Optional[str] = None):
