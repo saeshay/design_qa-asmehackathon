@@ -4,8 +4,9 @@ import subprocess
 
 from pathlib import Path
 import argparse
+import pandas as pd
 
-from scripts.pipeline.orchestrate import run_all, Paths
+from scripts.pipeline.orchestrate import run_all, Paths, get_clients, run_subset
 
 
 def main():
@@ -16,57 +17,95 @@ def main():
 
     paths = Paths()
 
-    # Run pipeline
-    from scripts.pipeline.orchestrate import get_clients
     default_client, escalation = get_clients()
 
-    # Ensure outputs dir
     Path(paths.out_dir).mkdir(exist_ok=True)
 
-    # Dispatch by subset for cheap runs
-    from scripts.pipeline.rule_retriever import RetrieverConfig, RuleAwareRetriever
-    from scripts.pipeline.task_heads import (
-        RetrievalHead, CompilationHead, DefinitionHead, PresenceHead, DimensionHead, FunctionalHead
-    )
-
-    retriever = RuleAwareRetriever(RetrieverConfig())
+    total_used = 0
+    total_cap = 0
 
     if args.subset in ("retrieval", "all"):
-        RetrievalHead(default_client, retriever, "You are a precise rule retriever. Return exactly the rule text with no extra words.", escalation=escalation).run(
-            paths.retrieval_csv, os.path.join(paths.out_dir, "retrieval.csv"), limit=args.limit
-        )
-    if args.subset in ("compilation", "all"):
-        CompilationHead(default_client, retriever, "You collect all relevant rule numbers. Return only rule numbers separated by commas.", escalation=escalation).run(
-            paths.compilation_csv, os.path.join(paths.out_dir, "compilation.csv"), limit=args.limit
-        )
-    if args.subset in ("definition", "all"):
-        DefinitionHead(default_client, "Identify the CAD component highlighted in pink. Return a short noun phrase only.", escalation=escalation).run(
-            paths.definition_csv, paths.definition_images_dir, os.path.join(paths.out_dir, "definition.csv"), limit=args.limit
-        )
-    if args.subset in ("presence", "all"):
-        PresenceHead(default_client, "Decide if the requested component is visible. Return yes or no only.", escalation=escalation).run(
-            paths.presence_csv, paths.presence_images_dir, os.path.join(paths.out_dir, "presence.csv"), limit=args.limit
-        )
-    if args.subset in ("dimension", "all"):
-        # run both and concat
-        DimensionHead(default_client, "Read the drawing and answer: include 'Explanation:' then 'Answer: yes/no'.", escalation=escalation).run(
-            paths.dimension_context_csv, paths.dimension_context_images_dir, os.path.join(paths.out_dir, "dimension_context.csv"), limit=args.limit
-        )
-        DimensionHead(default_client, "Read the drawing and answer: include 'Explanation:' then 'Answer: yes/no'.", escalation=escalation).run(
-            paths.dimension_detailed_csv, paths.dimension_detailed_images_dir, os.path.join(paths.out_dir, "dimension_detailed.csv"), limit=args.limit
-        )
-        # stitch
-        ctx = Path("your_outputs/dimension_context.csv")
-        det = Path("your_outputs/dimension_detailed.csv")
-        if ctx.exists() and det.exists():
-            import pandas as pd
-            pd.concat([pd.read_csv(ctx), pd.read_csv(det)], ignore_index=True).to_csv("your_outputs/dimension.csv", index=False)
-    if args.subset in ("functional", "all"):
-        FunctionalHead(default_client, "Use the image and rule to judge compliance. Include 'Explanation:' then 'Answer: yes/no'.", escalation=escalation).run(
-            paths.functional_csv, paths.functional_images_dir, os.path.join(paths.out_dir, "functional_performance.csv"), limit=args.limit
-        )
+        df = pd.read_csv(paths.retrieval_csv)
+        if args.limit: df = df.head(args.limit)
+        preds, used, cap = run_subset("retrieval", df.copy(), default_client, escalation)
+        df_out = df.copy()
+        df_out["model_prediction"] = preds
+        df_out.to_csv(os.path.join(paths.out_dir, "retrieval.csv"), index=False)
+        print(f"[retrieval] escalations: {used}/{cap}")
+        total_used += used; total_cap += cap
 
-    # Now run full evaluation if subset is all
+    if args.subset in ("compilation", "all"):
+        df = pd.read_csv(paths.compilation_csv)
+        if args.limit: df = df.head(args.limit)
+        preds, used, cap = run_subset("compilation", df.copy(), default_client, escalation)
+        df_out = df.copy()
+        df_out["model_prediction"] = preds
+        df_out.to_csv(os.path.join(paths.out_dir, "compilation.csv"), index=False)
+        print(f"[compilation] escalations: {used}/{cap}")
+        total_used += used; total_cap += cap
+
+    if args.subset in ("definition", "all"):
+        df = pd.read_csv(paths.definition_csv)
+        if args.limit: df = df.head(args.limit)
+        df = df.copy()
+        df["image_path"] = df["image"].apply(lambda n: os.path.join(paths.definition_images_dir, str(n)))
+        preds, used, cap = run_subset("definition", df.copy(), default_client, escalation)
+        df_out = df.copy()
+        df_out["model_prediction"] = preds
+        df_out.to_csv(os.path.join(paths.out_dir, "definition.csv"), index=False)
+        print(f"[definition] escalations: {used}/{cap}")
+        total_used += used; total_cap += cap
+
+    if args.subset in ("presence", "all"):
+        df = pd.read_csv(paths.presence_csv)
+        if args.limit: df = df.head(args.limit)
+        df = df.copy()
+        df["image_path"] = df["image"].apply(lambda n: os.path.join(paths.presence_images_dir, str(n)))
+        preds, used, cap = run_subset("presence", df.copy(), default_client, escalation)
+        df_out = df.copy()
+        df_out["model_prediction"] = preds
+        df_out.to_csv(os.path.join(paths.out_dir, "presence.csv"), index=False)
+        print(f"[presence] escalations: {used}/{cap}")
+        total_used += used; total_cap += cap
+
+    if args.subset in ("dimension", "all"):
+        # context
+        df_ctx = pd.read_csv(paths.dimension_context_csv)
+        if args.limit: df_ctx = df_ctx.head(args.limit)
+        df_ctx = df_ctx.copy()
+        df_ctx["image_path"] = df_ctx["image"].apply(lambda n: os.path.join(paths.dimension_context_images_dir, str(n)))
+        preds_ctx, used_ctx, cap_ctx = run_subset("dimension", df_ctx.copy(), default_client, escalation)
+        out_ctx = df_ctx.copy(); out_ctx["model_prediction"] = preds_ctx
+        out_ctx.to_csv(os.path.join(paths.out_dir, "dimension_context.csv"), index=False)
+        # detailed
+        df_det = pd.read_csv(paths.dimension_detailed_csv)
+        if args.limit: df_det = df_det.head(args.limit)
+        df_det = df_det.copy()
+        df_det["image_path"] = df_det["image"].apply(lambda n: os.path.join(paths.dimension_detailed_images_dir, str(n)))
+        preds_det, used_det, cap_det = run_subset("dimension", df_det.copy(), default_client, escalation)
+        out_det = df_det.copy(); out_det["model_prediction"] = preds_det
+        out_det.to_csv(os.path.join(paths.out_dir, "dimension_detailed.csv"), index=False)
+        # stitch
+        import pandas as _pd
+        _pd.concat([out_ctx, out_det], ignore_index=True).to_csv(os.path.join(paths.out_dir, "dimension.csv"), index=False)
+        print(f"[dimension] escalations: {used_ctx+used_det}/{cap_ctx+cap_det}")
+        total_used += used_ctx + used_det; total_cap += cap_ctx + cap_det
+
+    if args.subset in ("functional", "all"):
+        df = pd.read_csv(paths.functional_csv)
+        if args.limit: df = df.head(args.limit)
+        df = df.copy()
+        df["image_path"] = df["image"].apply(lambda n: os.path.join(paths.functional_images_dir, str(n)))
+        preds, used, cap = run_subset("functional", df.copy(), default_client, escalation)
+        df_out = df.copy(); df_out["model_prediction"] = preds
+        df_out.to_csv(os.path.join(paths.out_dir, "functional_performance.csv"), index=False)
+        print(f"[functional] escalations: {used}/{cap}")
+        total_used += used; total_cap += cap
+
+    if total_cap > 0:
+        print(f"[total] escalations: {total_used}/{total_cap}")
+
+    # Full evaluation only when all
     if args.subset == "all":
         cmd = [
             sys.executable, "eval/full_evaluation.py",
