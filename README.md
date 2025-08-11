@@ -186,3 +186,31 @@ If you use our benchmark in your work, please make sure to cite us!
   publisher={American Society of Mechanical Engineers}
 }
 ```
+
+## Quick pipeline run (Hackathon strategy)
+
+1. Create environment and install requirements (see above). Additionally install optional retriever deps:
+
+```
+pip install rank-bm25
+```
+
+2. Run the end-to-end pipeline and evaluation:
+
+```
+PYTHONPATH=. python3 scripts/run_pipeline_and_eval.py
+```
+
+Alternatively:
+
+```
+python3 -m scripts.run_pipeline_and_eval
+```
+
+This generates CSVs in `your_outputs/` for all subsets, concatenates dimension subsets, and runs `eval/full_evaluation.py` to produce `results.txt`.
+
+- Retrieval and compilation use a hybrid BM25 + dense retriever with regex expansions.
+- Visual subsets use pluggable model clients with strict format normalization and short outputs (<=120 chars where applicable).
+- A format fixer `fix_eval_columns.py` normalizes yes/no and explanation/answer structure to avoid penalties.
+
+To integrate real multimodal LLMs, implement concrete clients in `scripts/pipeline/vlm_clients.py` and swap them into the ensemble.
