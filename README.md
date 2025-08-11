@@ -234,3 +234,18 @@ python -m scripts.run_pipeline_and_eval
 ```
 
 Cost tips: top-2 rule snippets, ≤200-char OCR, 32–96 max_tokens, and cache enabled by default.
+
+## Config & Cost Controls
+
+```ruby
+# Provider (mock | openai | anthropic)
+$env:DQ_PROVIDER = "openai"
+$env:OPENAI_API_KEY = "<key>"
+$env:DQ_OPENAI_MODEL = "gpt-4o-mini"
+$env:DQ_OPENAI_BIG   = "gpt-4o"
+
+# Escalation budget (pick one)
+$env:DQ_ESC_PCT_MAX = "0.10"    # <= 10% of items may escalate (default)
+# or
+$env:DQ_ESC_ABS_MAX = "150"     # hard cap count across a subset
+```
