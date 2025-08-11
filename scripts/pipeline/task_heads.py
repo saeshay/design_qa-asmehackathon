@@ -15,6 +15,15 @@ from .format_checker import (
 )
 from .rule_retriever import RuleAwareRetriever
 from .cache import make_key, get as cache_get, put as cache_put
+from .validators import (
+    force_yes_no as v_force_yes_no,
+    is_yes_no as v_is_yes_no,
+    is_short_phrase as v_is_short_phrase,
+    good_compilation as v_good_compilation,
+    has_expl_and_answer as v_has_expl_and_answer,
+    good_retrieval as v_good_retrieval,
+    extract_rule_ids as v_extract_rule_ids,
+)
 
 
 @dataclass
@@ -31,6 +40,22 @@ def _client_meta(client) -> tuple:
     provider = getattr(client, "__class__", type(client)).__name__.replace("Client", "").lower() or "unknown"
     model = getattr(client, "model", "") or ""
     return provider, model
+
+
+class EscalationBudget:
+    """Controls how many items we may escalate. Defaults: <=10% or explicit cap."""
+    def __init__(self, total_items: int):
+        self.total = max(1, int(total_items))
+        cap_pct = float(os.getenv("DQ_ESC_PCT_MAX", "0.10"))
+        cap_abs = os.getenv("DQ_ESC_ABS_MAX")
+        self.max_escalations = int(cap_abs) if cap_abs else int(self.total * cap_pct + 0.5)
+        self.used = 0
+
+    def allow(self) -> bool:
+        return self.used < self.max_escalations
+
+    def consume(self):
+        self.used += 1
 
 
 def _ask_with_cache(client, subset, qid, prompt, image_path=None, max_tokens=64):
@@ -57,6 +82,7 @@ class RetrievalHead:
         df = pd.read_csv(in_csv)
         if limit is not None:
             df = df.head(limit)
+        budget = EscalationBudget(len(df))
         preds = []
         for idx, row in df.iterrows():
             context_snips = []
@@ -75,15 +101,18 @@ class RetrievalHead:
             verbatim = self.retriever.get_rule_text(rn) if rn else None
             if verbatim:
                 raw = verbatim
-            else:
-                raw = _ask_with_cache(self.client, "retrieval", idx, q, max_tokens=64)
-                norm = normalize_rule_text(raw)
-                if (norm == "INSUFFICIENT" or not norm) and self.escalation:
-                    raw2 = _ask_with_cache(self.escalation, "retrieval", idx, q, max_tokens=64)
-                    norm = normalize_rule_text(raw2)
-                preds.append(norm)
+                preds.append(normalize_rule_text(raw))
                 continue
-            preds.append(normalize_rule_text(raw))
+            raw = _ask_with_cache(self.client, "retrieval", idx, q, max_tokens=64)
+            norm = normalize_rule_text(raw)
+            if not v_good_retrieval(norm) and self.escalation and budget.allow():
+                raw2 = _ask_with_cache(self.escalation, "retrieval", idx, q, max_tokens=64)
+                norm2 = normalize_rule_text(raw2)
+                if v_good_retrieval(norm2):
+                    budget.consume()
+                    preds.append(norm2)
+                    continue
+            preds.append(norm if v_good_retrieval(norm) else "INSUFFICIENT")
         df_out = df.copy()
         df_out["model_prediction"] = preds
         df_out.to_csv(out_csv, index=False)
@@ -101,6 +130,7 @@ class CompilationHead:
         df = pd.read_csv(in_csv)
         if limit is not None:
             df = df.head(limit)
+        budget = EscalationBudget(len(df))
         preds = []
         for idx, row in df.iterrows():
             # Parse term inside backticks
@@ -108,15 +138,21 @@ class CompilationHead:
             term = term[1] if len(term) >= 2 else row['question']
             rules = self.retriever.find_relevant_rules(term)
             raw = ", ".join(rules)
-            norm = normalize_rule_list(raw)
-            if (norm == "INSUFFICIENT" or not norm) and self.client:
-                q = f"List only the relevant rule numbers separated by commas, no extra words.\nQuestion: {row['question']}\nAnswer: "
+            if not v_good_compilation(raw) and self.client:
+                q = (
+                    "List only relevant rule numbers separated by commas (e.g., 'T.7.1, T.7.2'). No extra words.\n"
+                    f"Question: {row['question']}\n"
+                    "Answer:"
+                )
                 raw2 = _ask_with_cache(self.client, "compilation", idx, q, max_tokens=64)
-                norm = normalize_rule_list(raw2)
-                if (norm == "INSUFFICIENT" or not norm) and self.escalation:
+                if not v_good_compilation(raw2) and self.escalation and budget.allow():
                     raw3 = _ask_with_cache(self.escalation, "compilation", idx, q, max_tokens=64)
-                    norm = normalize_rule_list(raw3)
-            preds.append(norm if norm != "INSUFFICIENT" else "")
+                    if v_good_compilation(raw3):
+                        budget.consume()
+                        raw = raw3
+                else:
+                    raw = raw2
+            preds.append(normalize_rule_list(raw) if v_good_compilation(raw) else "")
         df_out = df.copy()
         df_out["model_prediction"] = preds
         df_out.to_csv(out_csv, index=False)
@@ -133,17 +169,24 @@ class DefinitionHead:
         df = pd.read_csv(in_csv)
         if limit is not None:
             df = df.head(limit)
+        budget = EscalationBudget(len(df))
         preds = []
         for idx, row in df.iterrows():
             ctx = ""
-            q = f"{self.system_prompt}\n{row['question']}{ctx}"
+            q = (
+                "Identify the highlighted CAD component; return a short noun phrase only.\n"
+                f"Question: {row['question']}\n"
+                "Answer:"
+            )
             img = f"{images_dir}/{row['image']}"
-            raw = _ask_with_cache(self.client, "definition", idx, q, image_path=img, max_tokens=16)
-            norm = normalize_component_name(raw)
-            if (norm == "INSUFFICIENT" or not is_short_phrase(norm)) and self.escalation:
-                raw2 = _ask_with_cache(self.escalation, "definition", idx, q, image_path=img, max_tokens=16)
-                norm = normalize_component_name(raw2)
-            preds.append(norm)
+            ans = _ask_with_cache(self.client, "definition", idx, q, image_path=img, max_tokens=16).strip()
+            if not v_is_short_phrase(ans) and self.escalation and budget.allow():
+                ans2 = _ask_with_cache(self.escalation, "definition", idx, q, image_path=img, max_tokens=16).strip()
+                if v_is_short_phrase(ans2):
+                    budget.consume()
+                    preds.append(normalize_component_name(ans2))
+                    continue
+            preds.append(normalize_component_name(ans if v_is_short_phrase(ans) else "INSUFFICIENT"))
         df_out = df.copy()
         df_out["model_prediction"] = preds
         df_out.to_csv(out_csv, index=False)
@@ -160,16 +203,23 @@ class PresenceHead:
         df = pd.read_csv(in_csv)
         if limit is not None:
             df = df.head(limit)
+        budget = EscalationBudget(len(df))
         preds = []
         for idx, row in df.iterrows():
-            q = f"You are a design reviewer. Answer strictly yes or no.\nQuestion: {row['question']}\nAnswer: "
+            q = (
+                "Answer strictly with 'yes' or 'no'.\n"
+                f"Question: {row['question']}\n"
+                "Answer:"
+            )
             img = f"{images_dir}/{row['image']}"
-            raw = _ask_with_cache(self.client, "presence", idx, q, image_path=img, max_tokens=32)
-            norm = normalize_yes_no(raw)
-            if norm == "INSUFFICIENT" and self.escalation:
-                raw2 = _ask_with_cache(self.escalation, "presence", idx, q, image_path=img, max_tokens=32)
-                norm = normalize_yes_no(raw2)
-            preds.append(norm if norm in {"yes", "no"} else "no")
+            ans = v_force_yes_no(_ask_with_cache(self.client, "presence", idx, q, image_path=img, max_tokens=32))
+            if not v_is_yes_no(ans) and self.escalation and budget.allow():
+                ans2 = v_force_yes_no(_ask_with_cache(self.escalation, "presence", idx, q, image_path=img, max_tokens=32))
+                if v_is_yes_no(ans2):
+                    budget.consume()
+                    preds.append(ans2)
+                    continue
+            preds.append(ans if v_is_yes_no(ans) else "no")
         df_out = df.copy()
         df_out["model_prediction"] = preds
         df_out.to_csv(out_csv, index=False)
@@ -186,17 +236,27 @@ class DimensionHead:
         df = pd.read_csv(in_csv)
         if limit is not None:
             df = df.head(limit)
+        budget = EscalationBudget(len(df))
         preds = []
         for idx, row in df.iterrows():
-            ctx = ""
-            q = f"{self.system_prompt}\n{row['question']}{ctx}"
+            q = (
+                "Use the drawing to judge compliance. Respond as:\n"
+                "Explanation: <one short sentence>\n"
+                "Answer: yes/no\n"
+                f"Question: {row['question']}\n"
+                "Explanation:"
+            )
             img = f"{images_dir}/{row['image']}"
-            raw = _ask_with_cache(self.client, "dimension", idx, q, image_path=img, max_tokens=96)
-            norm = normalize_explained_yes_no(raw)
-            if norm == "INSUFFICIENT" and self.escalation:
-                raw2 = _ask_with_cache(self.escalation, "dimension", idx, q, image_path=img, max_tokens=96)
-                norm = normalize_explained_yes_no(raw2)
-            preds.append(norm)
+            ans = _ask_with_cache(self.client, "dimension", idx, q, image_path=img, max_tokens=96)
+            ok = v_has_expl_and_answer(ans) and v_is_yes_no(v_force_yes_no(ans))
+            if not ok and self.escalation and budget.allow():
+                ans2 = _ask_with_cache(self.escalation, "dimension", idx, q, image_path=img, max_tokens=96)
+                ok2 = v_has_expl_and_answer(ans2) and v_is_yes_no(v_force_yes_no(ans2))
+                if ok2:
+                    budget.consume()
+                    preds.append(normalize_explained_yes_no(ans2))
+                    continue
+            preds.append(normalize_explained_yes_no(ans) if ok else "Explanation: insufficient\nAnswer: no")
         df_out = df.copy()
         df_out["model_prediction"] = preds
         df_out.to_csv(out_csv, index=False)
@@ -213,17 +273,27 @@ class FunctionalHead:
         df = pd.read_csv(in_csv)
         if limit is not None:
             df = df.head(limit)
+        budget = EscalationBudget(len(df))
         preds = []
         for idx, row in df.iterrows():
-            ctx = ""
-            q = f"{self.system_prompt}\n{row['question']}{ctx}"
+            q = (
+                "Use the image and rule to judge compliance. Respond as:\n"
+                "Explanation: <one short sentence>\n"
+                "Answer: yes/no\n"
+                f"Question: {row['question']}\n"
+                "Explanation:"
+            )
             img = f"{images_dir}/{row['image']}"
-            raw = _ask_with_cache(self.client, "functional", idx, q, image_path=img, max_tokens=96)
-            norm = normalize_explained_yes_no(raw)
-            if norm == "INSUFFICIENT" and self.escalation:
-                raw2 = _ask_with_cache(self.escalation, "functional", idx, q, image_path=img, max_tokens=96)
-                norm = normalize_explained_yes_no(raw2)
-            preds.append(norm)
+            ans = _ask_with_cache(self.client, "functional", idx, q, image_path=img, max_tokens=96)
+            ok = v_has_expl_and_answer(ans) and v_is_yes_no(v_force_yes_no(ans))
+            if not ok and self.escalation and budget.allow():
+                ans2 = _ask_with_cache(self.escalation, "functional", idx, q, image_path=img, max_tokens=96)
+                ok2 = v_has_expl_and_answer(ans2) and v_is_yes_no(v_force_yes_no(ans2))
+                if ok2:
+                    budget.consume()
+                    preds.append(normalize_explained_yes_no(ans2))
+                    continue
+            preds.append(normalize_explained_yes_no(ans) if ok else "Explanation: insufficient\nAnswer: no")
         df_out = df.copy()
         df_out["model_prediction"] = preds
         df_out.to_csv(out_csv, index=False)
