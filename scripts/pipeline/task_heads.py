@@ -315,8 +315,8 @@ def answer_presence(row, default_client, escalation, budget: EscalationBudget):
         ans2 = v_force_yes_no(_ask_with_cache(escalation, subset, qid, prompt, image_path=img, max_tokens=32))
         if v_is_yes_no(ans2):
             budget.consume()
-            return ans2
-    return ans if v_is_yes_no(ans) else "no"
+            return ans2, "escalation"
+    return (ans if v_is_yes_no(ans) else "no"), "mini"
 
 
 def answer_definition(row, default_client, escalation, budget: EscalationBudget):
@@ -333,8 +333,8 @@ def answer_definition(row, default_client, escalation, budget: EscalationBudget)
         ans2 = _ask_with_cache(escalation, subset, qid, prompt, image_path=img, max_tokens=16).strip()
         if v_is_short_phrase(ans2):
             budget.consume()
-            return normalize_component_name(ans2)
-    return normalize_component_name(ans if v_is_short_phrase(ans) else "INSUFFICIENT")
+            return normalize_component_name(ans2), "escalation"
+    return normalize_component_name(ans if v_is_short_phrase(ans) else "INSUFFICIENT"), "mini"
 
 
 def answer_compilation(row, default_client, escalation, budget: EscalationBudget):
@@ -350,8 +350,8 @@ def answer_compilation(row, default_client, escalation, budget: EscalationBudget
         ans2 = _ask_with_cache(escalation, subset, qid, prompt, max_tokens=64)
         if v_good_compilation(ans2):
             budget.consume()
-            ans = ans2
-    return normalize_rule_list(ans) if v_good_compilation(ans) else ""
+            return normalize_rule_list(ans2), "escalation"
+    return (normalize_rule_list(ans) if v_good_compilation(ans) else ""), "mini"
 
 
 def answer_retrieval(row, default_client, escalation, budget: EscalationBudget):
@@ -367,8 +367,8 @@ def answer_retrieval(row, default_client, escalation, budget: EscalationBudget):
         ans2 = _ask_with_cache(escalation, subset, qid, prompt, max_tokens=64)
         if v_good_retrieval(ans2):
             budget.consume()
-            return normalize_rule_text(ans2)
-    return normalize_rule_text(ans) if v_good_retrieval(ans) else "INSUFFICIENT"
+            return normalize_rule_text(ans2), "escalation"
+    return (normalize_rule_text(ans) if v_good_retrieval(ans) else "INSUFFICIENT"), "mini"
 
 
 def answer_dimension(row, default_client, escalation, budget: EscalationBudget):
@@ -389,8 +389,8 @@ def answer_dimension(row, default_client, escalation, budget: EscalationBudget):
         ok2 = v_has_expl_and_answer(ans2) and v_is_yes_no(v_force_yes_no(ans2))
         if ok2:
             budget.consume()
-            return normalize_explained_yes_no(ans2)
-    return normalize_explained_yes_no(ans) if ok else "Explanation: insufficient\nAnswer: no"
+            return normalize_explained_yes_no(ans2), "escalation"
+    return (normalize_explained_yes_no(ans) if ok else "Explanation: insufficient\nAnswer: no"), "mini"
 
 
 def answer_functional(row, default_client, escalation, budget: EscalationBudget):
@@ -411,5 +411,5 @@ def answer_functional(row, default_client, escalation, budget: EscalationBudget)
         ok2 = v_has_expl_and_answer(ans2) and v_is_yes_no(v_force_yes_no(ans2))
         if ok2:
             budget.consume()
-            return normalize_explained_yes_no(ans2)
-    return normalize_explained_yes_no(ans) if ok else "Explanation: insufficient\nAnswer: no"
+            return normalize_explained_yes_no(ans2), "escalation"
+    return (normalize_explained_yes_no(ans) if ok else "Explanation: insufficient\nAnswer: no"), "mini"

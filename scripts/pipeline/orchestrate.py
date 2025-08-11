@@ -91,26 +91,28 @@ def get_clients():
 def run_subset(subset: str, df: pd.DataFrame, default_client, escalation):
     budget = EscalationBudget(total_items=len(df))
     preds = []
+    who = []
     for _, row in df.iterrows():
         # Trim any OCR payload
         if "ocr" in row and isinstance(row["ocr"], str):
             row["ocr"] = limit_ocr(row["ocr"], 200)
         if subset == "presence":
-            p = answer_presence(row, default_client, escalation, budget)
+            p, w = answer_presence(row, default_client, escalation, budget)
         elif subset == "definition":
-            p = answer_definition(row, default_client, escalation, budget)
+            p, w = answer_definition(row, default_client, escalation, budget)
         elif subset == "compilation":
-            p = answer_compilation(row, default_client, escalation, budget)
+            p, w = answer_compilation(row, default_client, escalation, budget)
         elif subset == "retrieval":
-            p = answer_retrieval(row, default_client, escalation, budget)
+            p, w = answer_retrieval(row, default_client, escalation, budget)
         elif subset == "dimension":
-            p = answer_dimension(row, default_client, escalation, budget)
+            p, w = answer_dimension(row, default_client, escalation, budget)
         elif subset == "functional":
-            p = answer_functional(row, default_client, escalation, budget)
+            p, w = answer_functional(row, default_client, escalation, budget)
         else:
-            p = "INSUFFICIENT"
+            p, w = "INSUFFICIENT", "mini"
         preds.append(p)
-    return preds, budget.used, budget.max_escalations
+        who.append(w)
+    return preds, who, budget.used, budget.max_escalations
 
 
 def run_all(paths: Paths, provider: Optional[str] = None):

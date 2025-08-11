@@ -249,3 +249,32 @@ $env:DQ_ESC_PCT_MAX = "0.10"    # <= 10% of items may escalate (default)
 # or
 $env:DQ_ESC_ABS_MAX = "150"     # hard cap count across a subset
 ```
+
+### Hybrid routing (recommended)
+Cheap default → GPT-4o-mini, escalate → Claude 3.5 Sonnet only when needed.
+
+Windows PowerShell
+
+```powershell
+pip install -r requirements.txt
+pip install openai anthropic
+
+# Pick hybrid
+$env:DQ_PROVIDER = "hybrid"
+
+# OpenAI (default tier)
+$env:OPENAI_API_KEY   = "<your openai key>"
+$env:DQ_OPENAI_MODEL  = "gpt-4o-mini"
+
+# Anthropic (big gun for escalations)
+$env:ANTHROPIC_API_KEY = "<your anthropic key>"
+$env:DQ_ANTHROPIC_BIG  = "claude-3-5-sonnet-20240620"
+
+# Optional: cap escalations (10% default)
+$env:DQ_ESC_PCT_MAX = "0.10"   # or set DQ_ESC_ABS_MAX to a hard count
+
+# Run small then full
+python -m scripts.run_pipeline_and_eval --subset definition --limit 20
+python -m scripts.run_pipeline_and_eval --subset retrieval  --limit 30
+python -m scripts.run_pipeline_and_eval
+```
