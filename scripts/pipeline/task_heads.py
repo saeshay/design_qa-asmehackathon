@@ -4,6 +4,7 @@ from typing import Optional, List
 
 import os
 import pandas as pd
+import re
 
 from .format_checker import (
     normalize_yes_no,
@@ -29,6 +30,7 @@ from .validators import (
     build_block as v_build_block,
     retrieval_nontrivial as v_retrieval_ok,
 )
+from .rules_index import RulesIndex
 
 
 @dataclass
@@ -374,23 +376,33 @@ def answer_compilation(row, default_client, escalation, budget: EscalationBudget
 def answer_retrieval(row, default_client, escalation, budget: EscalationBudget):
     subset = "retrieval"
     qid = row.get("qid", row.get("id", row.get("index", "")))
+    # Extract rule id
+    m = re.search(r"([A-Z]{1,3}\.\d+(?:\.\d+)*)", row.get("question", ""))
+    rid = m.group(1) if m else None
+    try:
+        rules = RulesIndex()
+        txt = rules.get(rid) if rid else None
+    except Exception:
+        txt = None
+    if txt:
+        # exact rule text only, one line, no labels
+        return (" ".join(txt.split()).strip('"'), "index")
+    # fallback to previous behavior but still structured
     prompt = (
         "Return exactly the text of the requested rule and nothing else.\n"
         f"Question: {row['question']}\n"
         "Answer:"
     )
     ans = _ask_with_cache(default_client, subset, qid, prompt, max_tokens=64)
-    exp = "Found rule text." if v_retrieval_ok(ans) else "Unable to determine from context."
-    if not v_retrieval_ok(ans) and escalation and budget.allow():
+    if v_retrieval_ok(ans):
+        return (" ".join(ans.split()).strip('"'), "mini")
+    if escalation and budget.allow():
         ans2 = _ask_with_cache(escalation, subset, qid, prompt, max_tokens=96)
         if v_retrieval_ok(ans2):
             budget.consume()
-            return v_build_block("Found rule text.", "yes"), "escalation"
-        # fallback to no
-        budget.consume()
-        return v_build_block("Unable to determine from context.", "no"), "escalation"
-    # default path
-    return v_build_block(exp, "yes" if v_retrieval_ok(ans) else "no"), "mini"
+            return (" ".join(ans2.split()).strip('"'), "escalation")
+    # last-resort fallback
+    return ("INSUFFICIENT", "mini")
 
 
 def answer_dimension(row, default_client, escalation, budget: EscalationBudget):
