@@ -26,6 +26,8 @@ from .validators import (
     normalize_yes_no_block as v_norm_block,
     is_yes_no_block as v_is_block,
     presence_strict as v_presence_strict,
+    build_block as v_build_block,
+    retrieval_nontrivial as v_retrieval_ok,
 )
 
 
@@ -378,12 +380,17 @@ def answer_retrieval(row, default_client, escalation, budget: EscalationBudget):
         "Answer:"
     )
     ans = _ask_with_cache(default_client, subset, qid, prompt, max_tokens=64)
-    if not v_good_retrieval(ans) and escalation and budget.allow():
-        ans2 = _ask_with_cache(escalation, subset, qid, prompt, max_tokens=64)
-        if v_good_retrieval(ans2):
+    exp = "Found rule text." if v_retrieval_ok(ans) else "Unable to determine from context."
+    if not v_retrieval_ok(ans) and escalation and budget.allow():
+        ans2 = _ask_with_cache(escalation, subset, qid, prompt, max_tokens=96)
+        if v_retrieval_ok(ans2):
             budget.consume()
-            return normalize_rule_text(ans2), "escalation"
-    return (normalize_rule_text(ans) if v_good_retrieval(ans) else "INSUFFICIENT"), "mini"
+            return v_build_block("Found rule text.", "yes"), "escalation"
+        # fallback to no
+        budget.consume()
+        return v_build_block("Unable to determine from context.", "no"), "escalation"
+    # default path
+    return v_build_block(exp, "yes" if v_retrieval_ok(ans) else "no"), "mini"
 
 
 def answer_dimension(row, default_client, escalation, budget: EscalationBudget):
@@ -432,5 +439,6 @@ def answer_functional(row, default_client, escalation, budget: EscalationBudget)
             budget.consume()
             return norm2, "escalation"
     if not v_is_block(norm):
-        norm = "INSUFFICIENT"
+        # unified fallback
+        norm = v_build_block("Unable to determine from context.", "no")
     return norm, who

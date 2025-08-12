@@ -85,3 +85,19 @@ def presence_strict(text: str) -> str:
         return "INSUFFICIENT"
     m = re.search(r'(?i)\b(yes|no)\b', text)
     return m.group(1).lower() if m else "INSUFFICIENT"
+
+# New helpers for unified block formatting
+
+def build_block(explanation: str, answer_yes_no: str) -> str:
+    ans = answer_yes_no.strip().lower()
+    if ans not in YES_NO:
+        ans = "no"
+    exp = (explanation or "").strip() or "—"
+    return f"Explanation: {exp}\nAnswer: {ans}"
+
+
+def retrieval_nontrivial(s: str, min_len: int = 20) -> bool:
+    if not isinstance(s, str):
+        return False
+    txt = s.strip().lower()
+    return len(txt) >= min_len and "insufficient" not in txt
