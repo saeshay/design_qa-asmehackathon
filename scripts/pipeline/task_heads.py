@@ -23,6 +23,9 @@ from .validators import (
     has_expl_and_answer as v_has_expl_and_answer,
     good_retrieval as v_good_retrieval,
     extract_rule_ids as v_extract_rule_ids,
+    normalize_yes_no_block as v_norm_block,
+    is_yes_no_block as v_is_block,
+    presence_strict as v_presence_strict,
 )
 
 
@@ -212,14 +215,17 @@ class PresenceHead:
                 "Answer:"
             )
             img = f"{images_dir}/{row['image']}"
-            ans = v_force_yes_no(_ask_with_cache(self.client, "presence", idx, q, image_path=img, max_tokens=32))
-            if not v_is_yes_no(ans) and self.escalation and budget.allow():
-                ans2 = v_force_yes_no(_ask_with_cache(self.escalation, "presence", idx, q, image_path=img, max_tokens=32))
-                if v_is_yes_no(ans2):
+            ans = _ask_with_cache(self.client, "presence", idx, q, image_path=img, max_tokens=32)
+            norm = v_presence_strict(ans)
+            who = "mini"
+            if norm == "INSUFFICIENT" and self.escalation and budget.allow():
+                ans2 = _ask_with_cache(self.escalation, "presence", idx, q, image_path=img, max_tokens=48)
+                norm2 = v_presence_strict(ans2)
+                if norm2 in ("yes", "no"):
                     budget.consume()
-                    preds.append(ans2)
+                    preds.append(norm2)
                     continue
-            preds.append(ans if v_is_yes_no(ans) else "no")
+            preds.append(norm if norm in {"yes", "no"} else "no")
         df_out = df.copy()
         df_out["model_prediction"] = preds
         df_out.to_csv(out_csv, index=False)
@@ -248,15 +254,18 @@ class DimensionHead:
             )
             img = f"{images_dir}/{row['image']}"
             ans = _ask_with_cache(self.client, "dimension", idx, q, image_path=img, max_tokens=96)
-            ok = v_has_expl_and_answer(ans) and v_is_yes_no(v_force_yes_no(ans))
-            if not ok and self.escalation and budget.allow():
-                ans2 = _ask_with_cache(self.escalation, "dimension", idx, q, image_path=img, max_tokens=96)
-                ok2 = v_has_expl_and_answer(ans2) and v_is_yes_no(v_force_yes_no(ans2))
-                if ok2:
+            norm = v_norm_block(ans)
+            who = "mini"
+            if not v_is_block(norm) and self.escalation and budget.allow():
+                ans2 = _ask_with_cache(self.escalation, "dimension", idx, q, image_path=img, max_tokens=128)
+                norm2 = v_norm_block(ans2)
+                if v_is_block(norm2):
                     budget.consume()
-                    preds.append(normalize_explained_yes_no(ans2))
+                    preds.append(norm2)
                     continue
-            preds.append(normalize_explained_yes_no(ans) if ok else "Explanation: insufficient\nAnswer: no")
+            if not v_is_block(norm):
+                norm = "INSUFFICIENT"
+            preds.append(norm if v_is_block(norm) else "Explanation: insufficient\nAnswer: no")
         df_out = df.copy()
         df_out["model_prediction"] = preds
         df_out.to_csv(out_csv, index=False)
@@ -285,15 +294,18 @@ class FunctionalHead:
             )
             img = f"{images_dir}/{row['image']}"
             ans = _ask_with_cache(self.client, "functional", idx, q, image_path=img, max_tokens=96)
-            ok = v_has_expl_and_answer(ans) and v_is_yes_no(v_force_yes_no(ans))
-            if not ok and self.escalation and budget.allow():
-                ans2 = _ask_with_cache(self.escalation, "functional", idx, q, image_path=img, max_tokens=96)
-                ok2 = v_has_expl_and_answer(ans2) and v_is_yes_no(v_force_yes_no(ans2))
-                if ok2:
+            norm = v_norm_block(ans)
+            who = "mini"
+            if not v_is_block(norm) and self.escalation and budget.allow():
+                ans2 = _ask_with_cache(self.escalation, "functional", idx, q, image_path=img, max_tokens=128)
+                norm2 = v_norm_block(ans2)
+                if v_is_block(norm2):
                     budget.consume()
-                    preds.append(normalize_explained_yes_no(ans2))
+                    preds.append(norm2)
                     continue
-            preds.append(normalize_explained_yes_no(ans) if ok else "Explanation: insufficient\nAnswer: no")
+            if not v_is_block(norm):
+                norm = "INSUFFICIENT"
+            preds.append(norm if v_is_block(norm) else "Explanation: insufficient\nAnswer: no")
         df_out = df.copy()
         df_out["model_prediction"] = preds
         df_out.to_csv(out_csv, index=False)
@@ -310,13 +322,16 @@ def answer_presence(row, default_client, escalation, budget: EscalationBudget):
         f"Question: {row['question']}\n"
         "Answer:"
     )
-    ans = v_force_yes_no(_ask_with_cache(default_client, subset, qid, prompt, image_path=img, max_tokens=32))
-    if not v_is_yes_no(ans) and escalation and budget.allow():
-        ans2 = v_force_yes_no(_ask_with_cache(escalation, subset, qid, prompt, image_path=img, max_tokens=32))
-        if v_is_yes_no(ans2):
+    ans = _ask_with_cache(default_client, subset, qid, prompt, image_path=img, max_tokens=32)
+    norm = v_presence_strict(ans)
+    who = "mini"
+    if norm == "INSUFFICIENT" and escalation and budget.allow():
+        ans2 = _ask_with_cache(escalation, subset, qid, prompt, image_path=img, max_tokens=48)
+        norm2 = v_presence_strict(ans2)
+        if norm2 in ("yes", "no"):
             budget.consume()
-            return ans2, "escalation"
-    return (ans if v_is_yes_no(ans) else "no"), "mini"
+            return norm2, "escalation"
+    return (norm if norm in {"yes", "no"} else "no"), who
 
 
 def answer_definition(row, default_client, escalation, budget: EscalationBudget):
@@ -383,14 +398,17 @@ def answer_dimension(row, default_client, escalation, budget: EscalationBudget):
         "Explanation:"
     )
     ans = _ask_with_cache(default_client, subset, qid, prompt, image_path=img, max_tokens=96)
-    ok = v_has_expl_and_answer(ans) and v_is_yes_no(v_force_yes_no(ans))
-    if not ok and escalation and budget.allow():
-        ans2 = _ask_with_cache(escalation, subset, qid, prompt, image_path=img, max_tokens=96)
-        ok2 = v_has_expl_and_answer(ans2) and v_is_yes_no(v_force_yes_no(ans2))
-        if ok2:
+    norm = v_norm_block(ans)
+    who = "mini"
+    if not v_is_block(norm) and escalation and budget.allow():
+        ans2 = _ask_with_cache(escalation, subset, qid, prompt, image_path=img, max_tokens=128)
+        norm2 = v_norm_block(ans2)
+        if v_is_block(norm2):
             budget.consume()
-            return normalize_explained_yes_no(ans2), "escalation"
-    return (normalize_explained_yes_no(ans) if ok else "Explanation: insufficient\nAnswer: no"), "mini"
+            return norm2, "escalation"
+    if not v_is_block(norm):
+        norm = "INSUFFICIENT"
+    return norm, who
 
 
 def answer_functional(row, default_client, escalation, budget: EscalationBudget):
@@ -405,11 +423,14 @@ def answer_functional(row, default_client, escalation, budget: EscalationBudget)
         "Explanation:"
     )
     ans = _ask_with_cache(default_client, subset, qid, prompt, image_path=img, max_tokens=96)
-    ok = v_has_expl_and_answer(ans) and v_is_yes_no(v_force_yes_no(ans))
-    if not ok and escalation and budget.allow():
-        ans2 = _ask_with_cache(escalation, subset, qid, prompt, image_path=img, max_tokens=96)
-        ok2 = v_has_expl_and_answer(ans2) and v_is_yes_no(v_force_yes_no(ans2))
-        if ok2:
+    norm = v_norm_block(ans)
+    who = "mini"
+    if not v_is_block(norm) and escalation and budget.allow():
+        ans2 = _ask_with_cache(escalation, subset, qid, prompt, image_path=img, max_tokens=128)
+        norm2 = v_norm_block(ans2)
+        if v_is_block(norm2):
             budget.consume()
-            return normalize_explained_yes_no(ans2), "escalation"
-    return (normalize_explained_yes_no(ans) if ok else "Explanation: insufficient\nAnswer: no"), "mini"
+            return norm2, "escalation"
+    if not v_is_block(norm):
+        norm = "INSUFFICIENT"
+    return norm, who

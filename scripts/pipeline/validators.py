@@ -1,16 +1,16 @@
 import re
 
-_RULE_RX = re.compile(r"\b[A-Z]{1,3}\.\d+(?:\.\d+)*\b")  # e.g., T.7.1.2 or V.1
+YES_NO = {"yes", "no"}
 
+# Existing helpers (kept for compatibility)
+_RULE_RX = re.compile(r"\b[A-Z]{1,3}\.\d+(?:\.\d+)*\b")
 
 def norm(s: str) -> str:
     return (s or "").strip()
 
-
 def is_yes_no(s: str) -> bool:
     s = norm(s).lower()
     return s == "yes" or s == "no"
-
 
 def force_yes_no(s: str) -> str:
     s = norm(s).lower()
@@ -20,7 +20,6 @@ def force_yes_no(s: str) -> str:
         return "no"
     return ""
 
-
 def is_short_phrase(s: str, max_words=4, max_len=60) -> bool:
     s = norm(s)
     if not s or len(s) > max_len:
@@ -28,51 +27,61 @@ def is_short_phrase(s: str, max_words=4, max_len=60) -> bool:
     words = re.findall(r"[A-Za-z0-9\-]+", s)
     return 1 <= len(words) <= max_words
 
-
 def extract_rule_ids(s: str):
     return _RULE_RX.findall(s or "")
-
 
 def has_expl_and_answer(s: str) -> bool:
     s = norm(s).lower()
     return ("explanation:" in s) and ("answer:" in s)
 
-
 def good_compilation(s: str, min_rules=1) -> bool:
     rules = extract_rule_ids(s)
     return len(set(rules)) >= min_rules
 
-
 def good_retrieval(s: str, min_len=20) -> bool:
-    # Retrieval expects verbatim rule text; we just enforce it's non-trivial text.
     s = norm(s)
-    return len(s) >= min_len and not _RULE_RX.search(s)  # text not just rule ids
-
+    return len(s) >= min_len and not _RULE_RX.search(s)
 
 def limit_ocr(s: str, limit=200) -> str:
     return (s or "")[:limit]
 
-# Additional helpers per spec
-def presence_yes_no(ans: str) -> str:
-    ans = (ans or "").strip().lower()
-    if ans.startswith("yes"):
-        return "yes"
-    elif ans.startswith("no"):
-        return "no"
-    return "INSUFFICIENT"
+# Additional strict helpers per spec
 
+def normalize_yes_no_block(text: str) -> str:
+    """
+    Returns canonical two-line template if we can find a yes/no.
+    Prefers an explicit `Answer:` line; otherwise falls back to any yes/no token.
+    If nothing clear, returns the original text unchanged.
+    """
+    if not isinstance(text, str):
+        return text
+    s = text.strip()
+    m = re.search(r'(?im)^\s*answer\s*:\s*([^\n\r]+)', s)
+    if m:
+        v = m.group(1).strip().lower()
+        v = "yes" if "yes" in v else ("no" if "no" in v else None)
+    else:
+        m2 = re.search(r'(?i)\b(yes|no)\b', s)
+        v = m2.group(1).lower() if m2 else None
+    if v in YES_NO:
+        exp = None
+        mexp = re.search(r'(?im)^\s*explanation\s*:\s*(.+)$', s)
+        if mexp:
+            exp = mexp.group(1).strip()
+        return f"Explanation: {exp or '—'}\nAnswer: {v}"
+    return s
 
-def dimension_fn_template(ans: str) -> str:
-    lines = (ans or "").splitlines()
-    answer = None
-    for line in lines:
-        if line.lower().startswith("answer:"):
-            answer = line.split(":", 1)[-1].strip().lower()
-            if answer in ("yes", "no"):
-                return f"Explanation: ...\nAnswer: {answer}"
-    return "INSUFFICIENT"
+def is_yes_no_block(text: str) -> bool:
+    if not isinstance(text, str):
+        return False
+    m = re.search(r'(?im)^\s*answer\s*:\s*([^\n\r]+)', text or "")
+    if m:
+        v = m.group(1).strip().lower()
+        return ("yes" in v) or ("no" in v)
+    return bool(re.search(r'(?i)\b(yes|no)\b', text or ""))
 
-
-def retrieval_guard(ans: str) -> bool:
-    a = (ans or "").strip().lower()
-    return len(a) < 20 or "insufficient" in a
+def presence_strict(text: str) -> str:
+    if not isinstance(text, str):
+        return "INSUFFICIENT"
+    m = re.search(r'(?i)\b(yes|no)\b', text)
+    return m.group(1).lower() if m else "INSUFFICIENT"
