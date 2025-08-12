@@ -1,94 +1,177 @@
 import os
 import base64
-import mimetypes
 from io import BytesIO
-from tenacity import retry, wait_exponential, stop_after_attempt
+from typing import Optional, Tuple
+from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_exception_type
+
+# Pillow for robust image open/resize/format sniffing
 from PIL import Image
 
-# -------- Mock (keeps repo runnable for $0) ----------
+# ---------- Utilities ----------
+
+MAX_SIDE = 4000  # safety margin well below 8000px provider cap
+
+def _open_and_prepare_image(image_path: str) -> Tuple[str, str]:
+    """
+    Open an image, downscale if needed, and return (mime, base64_str).
+
+    - Supports PNG/JPEG.
+    - Enforces that max(width, height) <= MAX_SIDE.
+    - Preserves original format if jpg/png; otherwise converts to PNG.
+    """
+    if not image_path:
+        raise ValueError("image_path not provided")
+
+    with Image.open(image_path) as im:
+        im = im.convert("RGB") if im.mode not in ("RGB", "RGBA", "L") else im
+
+        # downscale if any side too large
+        w, h = im.size
+        max_dim = max(w, h)
+        if max_dim > MAX_SIDE:
+            scale = MAX_SIDE / float(max_dim)
+            new_w = max(1, int(w * scale))
+            new_h = max(1, int(h * scale))
+            im = im.resize((new_w, new_h), Image.LANCZOS)
+
+        # decide mime/format
+        fmt = (im.format or "").upper()
+        # If Pillow lost format after conversion, infer from path suffix
+        ext = os.path.splitext(image_path)[1].lower()
+        # Prefer PNG for unknown/ext-less content
+        if fmt in ("PNG", "JPEG", "JPG"):
+            out_fmt = "PNG" if fmt == "PNG" else "JPEG"
+        else:
+            if ext in (".png",):
+                out_fmt = "PNG"
+            elif ext in (".jpg", ".jpeg"):
+                out_fmt = "JPEG"
+            else:
+                out_fmt = "PNG"
+
+        mime = "image/png" if out_fmt == "PNG" else "image/jpeg"
+
+        # re-encode into memory in canonical format
+        buf = BytesIO()
+        save_kwargs = {}
+        if out_fmt == "JPEG":
+            # reasonable quality for diagrams, reduces payload size
+            save_kwargs.update(dict(quality=92, optimize=True))
+        im.save(buf, format=out_fmt, **save_kwargs)
+        b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+        return mime, b64
+
+
+# ---------- Mock (keeps repo runnable for $0) ----------
+
 class MockClient:
-    def __init__(self, model="mock"):
+    def __init__(self, model: str = "mock"):
         self.model = model
 
-    def answer(self, prompt, image_path=None, max_tokens=64):
+    def answer(self, prompt: str, image_path: Optional[str] = None, max_tokens: int = 64) -> str:
+        # deterministic, zero-cost placeholder
+        # keep response shape consistent with subset prompts
         if "Answer:" in prompt:
-            return "Answer: insufficient"
+            return "Explanation: mock\nAnswer: insufficient"
         return "insufficient"
 
-# ---------- helpers: resize + base64 (returns mime, b64) ----------
-def _prepare_image(image_path: str, max_side: int = None, prefer_jpeg: bool = True):
-    """
-    Downscale so max(width,height) <= max_side (env DQ_IMG_MAX_SIDE or 3072),
-    convert to JPEG if requested, return (mime, base64_str).
-    """
-    max_side = max_side or int(os.getenv("DQ_IMG_MAX_SIDE", "3072"))
-    img = Image.open(image_path)
-    w, h = img.size
-    if max(w, h) > max_side:
-        scale = float(max_side) / float(max(w, h))
-        new_size = (max(1, int(w * scale)), max(1, int(h * scale)))
-        img = img.resize(new_size, Image.LANCZOS)
 
-    use_jpeg = prefer_jpeg
-    if use_jpeg and img.mode in ("RGBA", "LA", "P"):
-        img = img.convert("RGB")
+# ---------- OpenAI (vision + text) ----------
 
-    buf = BytesIO()
-    if use_jpeg:
-        img.save(buf, format="JPEG", quality=85, optimize=True)
-        mime = "image/jpeg"
-    else:
-        img.save(buf, format="PNG")
-        mime = "image/png"
-    b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
-    return mime, b64
-
-# -------- OpenAI (vision + text) ----------
 class OpenAIClient:
-    def __init__(self, model="gpt-4o-mini"):
+    def __init__(self, model: str = None):
         from openai import OpenAI
         self.client = OpenAI()
-        self.model = model
+        self.model = model or os.getenv("DQ_OPENAI_MODEL", "gpt-4o-mini")
 
-    @retry(wait=wait_exponential(min=1, max=8), stop=stop_after_attempt(3))
-    def answer(self, prompt, image_path=None, max_tokens=64):
+    @retry(
+        wait=wait_exponential(min=0.5, max=12),
+        stop=stop_after_attempt(4),
+        retry=retry_if_exception_type(Exception),
+        reraise=True,
+    )
+    def answer(self, prompt: str, image_path: Optional[str] = None, max_tokens: int = 64) -> str:
         content = [{"type": "text", "text": prompt}]
         if image_path:
-            mime, b64 = _prepare_image(image_path, max_side=int(os.getenv("DQ_IMG_MAX_SIDE", "3072")))
-            data_url = f"data:{mime};base64,{b64}"
-            content.append({"type": "image_url", "image_url": {"url": data_url}})
+            mime, b64 = _open_and_prepare_image(image_path)
+            # NOTE: OpenAI chat.completions wants type="image_url" with a data URL
+            content.append(
+                {
+                    "type": "image_url",
+                    "image_url": f"data:{mime};base64,{b64}",
+                }
+            )
+
         resp = self.client.chat.completions.create(
             model=self.model,
             messages=[{"role": "user", "content": content}],
             temperature=0,
             max_tokens=max_tokens,
         )
-        return (resp.choices[0].message.content or "").strip()
+        txt = (resp.choices[0].message.content or "").strip()
+        return txt
 
-# -------- Anthropic (vision + text) ----------
+
+# ---------- Anthropic (vision + text) ----------
+
 class AnthropicClient:
-    def __init__(self, model="claude-3-haiku-20240307"):
+    def __init__(self, model: str = None):
         import anthropic
-        self.client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
-        self.model = model
+        self.ant = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+        self.model = model or os.getenv("DQ_ANTHROPIC_MODEL", "claude-3-haiku-20240307")
 
-    @retry(wait=wait_exponential(min=1, max=8), stop=stop_after_attempt(3))
-    def answer(self, prompt, image_path=None, max_tokens=128):
+    @retry(
+        wait=wait_exponential(min=0.5, max=12),
+        stop=stop_after_attempt(4),
+        retry=retry_if_exception_type(Exception),
+        reraise=True,
+    )
+    def answer(self, prompt: str, image_path: Optional[str] = None, max_tokens: int = 128) -> str:
         content = [{"type": "text", "text": prompt}]
         if image_path:
-            # Use resized image and the correct MIME to avoid media_type mismatch.
-            mime, b64 = _prepare_image(image_path, max_side=int(os.getenv("DQ_IMG_MAX_SIDE", "3072")))
-            content.append({
-                "type": "image",
-                "source": {"type": "base64", "media_type": mime, "data": b64}
-            })
-        msg = self.client.messages.create(
+            mime, b64 = _open_and_prepare_image(image_path)
+            # NOTE: Anthropic wants a structured base64 image block
+            content.append(
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": mime,  # "image/png" or "image/jpeg"
+                        "data": b64,
+                    },
+                }
+            )
+
+        msg = self.ant.messages.create(
             model=self.model,
             max_tokens=max_tokens,
             temperature=0,
             messages=[{"role": "user", "content": content}],
         )
-        for block in msg.content:
+
+        # Pull first text block
+        for block in getattr(msg, "content", []) or []:
             if getattr(block, "type", "") == "text" and getattr(block, "text", ""):
                 return block.text.strip()
+        # Some SDK versions return msg.content as list[dict]
+        if isinstance(getattr(msg, "content", None), list):
+            for block in msg.content:
+                if isinstance(block, dict) and block.get("type") == "text" and block.get("text"):
+                    return block["text"].strip()
         return ""
+
+
+# ---------- Factory ----------
+
+def make_client():
+    """
+    Picks a client based on env:
+    - DQ_PROVIDER in {"openai", "anthropic", "mock"} (default "mock")
+    - DQ_OPENAI_MODEL, DQ_ANTHROPIC_MODEL override defaults
+    """
+    provider = os.getenv("DQ_PROVIDER", "mock").strip().lower()
+    if provider == "openai":
+        return OpenAIClient()
+    if provider == "anthropic":
+        return AnthropicClient()
+    return MockClient()
