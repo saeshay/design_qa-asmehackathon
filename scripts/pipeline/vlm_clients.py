@@ -1,5 +1,9 @@
-import os, base64
+import os
+import base64
+import mimetypes
+from io import BytesIO
 from tenacity import retry, wait_exponential, stop_after_attempt
+from PIL import Image
 
 # -------- Mock (keeps repo runnable for $0) ----------
 class MockClient:
@@ -7,10 +11,37 @@ class MockClient:
         self.model = model
 
     def answer(self, prompt, image_path=None, max_tokens=64):
-        # super-minimal mock; returns tiny, deterministic tokens
         if "Answer:" in prompt:
             return "Answer: insufficient"
         return "insufficient"
+
+# ---------- helpers: resize + base64 (returns mime, b64) ----------
+def _prepare_image(image_path: str, max_side: int = None, prefer_jpeg: bool = True):
+    """
+    Downscale so max(width,height) <= max_side (env DQ_IMG_MAX_SIDE or 3072),
+    convert to JPEG if requested, return (mime, base64_str).
+    """
+    max_side = max_side or int(os.getenv("DQ_IMG_MAX_SIDE", "3072"))
+    img = Image.open(image_path)
+    w, h = img.size
+    if max(w, h) > max_side:
+        scale = float(max_side) / float(max(w, h))
+        new_size = (max(1, int(w * scale)), max(1, int(h * scale)))
+        img = img.resize(new_size, Image.LANCZOS)
+
+    use_jpeg = prefer_jpeg
+    if use_jpeg and img.mode in ("RGBA", "LA", "P"):
+        img = img.convert("RGB")
+
+    buf = BytesIO()
+    if use_jpeg:
+        img.save(buf, format="JPEG", quality=85, optimize=True)
+        mime = "image/jpeg"
+    else:
+        img.save(buf, format="PNG")
+        mime = "image/png"
+    b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+    return mime, b64
 
 # -------- OpenAI (vision + text) ----------
 class OpenAIClient:
@@ -23,9 +54,9 @@ class OpenAIClient:
     def answer(self, prompt, image_path=None, max_tokens=64):
         content = [{"type": "text", "text": prompt}]
         if image_path:
-            with open(image_path, "rb") as f:
-                b64 = base64.b64encode(f.read()).decode()
-            content.append({"type": "input_image", "image_url": f"data:image/png;base64,{b64}"})
+            mime, b64 = _prepare_image(image_path, max_side=int(os.getenv("DQ_IMG_MAX_SIDE", "3072")))
+            data_url = f"data:{mime};base64,{b64}"
+            content.append({"type": "image_url", "image_url": {"url": data_url}})
         resp = self.client.chat.completions.create(
             model=self.model,
             messages=[{"role": "user", "content": content}],
@@ -45,62 +76,19 @@ class AnthropicClient:
     def answer(self, prompt, image_path=None, max_tokens=128):
         content = [{"type": "text", "text": prompt}]
         if image_path:
-            with open(image_path, "rb") as f:
-                b64 = base64.b64encode(f.read()).decode()
-            content.append({"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": b64}})
+            # Use resized image and the correct MIME to avoid media_type mismatch.
+            mime, b64 = _prepare_image(image_path, max_side=int(os.getenv("DQ_IMG_MAX_SIDE", "3072")))
+            content.append({
+                "type": "image",
+                "source": {"type": "base64", "media_type": mime, "data": b64}
+            })
         msg = self.client.messages.create(
             model=self.model,
             max_tokens=max_tokens,
             temperature=0,
             messages=[{"role": "user", "content": content}],
         )
-        # anthropic returns list of content blocks; pick first text block
         for block in msg.content:
             if getattr(block, "type", "") == "text" and getattr(block, "text", ""):
                 return block.text.strip()
         return ""
-
-# -------- Additional VLM helpers (drop-in) ----------
-import io
-from PIL import Image
-
-def _prepare_image(image_path: str, max_side: int = None, prefer_jpeg: bool = True):
-    # Downscale so max(width, height) <= max_side (default from env DQ_IMG_MAX_SIDE=3072)
-    # Convert to JPEG if needed, quality ~85, return (mime, base64 string)
-    max_side = max_side or int(os.getenv("DQ_IMG_MAX_SIDE", "3072"))
-    ext = os.path.splitext(image_path)[-1].lower()
-    im = Image.open(image_path)
-    if max(im.size) > max_side:
-        ratio = max_side / max(im.size)
-        new_size = (int(im.size[0] * ratio), int(im.size[1] * ratio))
-        im = im.resize(new_size, Image.LANCZOS)
-    mime = "image/png" if ext in [".png"] else "image/jpeg"
-    if prefer_jpeg or mime == "image/png":
-        with io.BytesIO() as buf:
-            im.convert("RGB").save(buf, format="JPEG", quality=85)
-            data = buf.getvalue()
-        mime = "image/jpeg"
-    else:
-        with io.BytesIO() as buf:
-            im.save(buf, format="PNG")
-            data = buf.getvalue()
-    b64 = base64.b64encode(data).decode()
-    return mime, b64
-
-class OpenAIVLMClient:
-    def __init__(self, api_key):
-        self.api_key = api_key
-    def format_payload(self, image_path):
-        mime, b64 = _prepare_image(image_path)
-        return {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}}
-
-class AnthropicVLMClient:
-    def __init__(self, api_key):
-        self.api_key = api_key
-    def format_payload(self, image_path):
-        mime, b64 = _prepare_image(image_path)
-        return {"type": "image", "source": {"type": "base64", "media_type": mime, "data": b64}}
-
-class MockVLMClient:
-    def format_payload(self, image_path):
-        return {"type": "mock", "path": image_path}
