@@ -6,6 +6,13 @@ from pathlib import Path
 import argparse
 import pandas as pd
 
+# Load .env if present
+try:
+    from dotenv import load_dotenv  # type: ignore
+    load_dotenv()
+except Exception:
+    pass
+
 from scripts.pipeline.orchestrate import run_all, Paths, get_clients, run_subset
 
 
