@@ -10,6 +10,15 @@ from sentence_transformers import SentenceTransformer
 from sentence_transformers import util
 
 
+# Coercion helper to make metrics robust to NaN/floats
+def _to_text(x: object) -> str:
+    try:
+        s = "" if x is None else str(x)
+    except Exception:
+        s = ""
+    return s.strip()
+
+
 # METRICS IN LITERATURE
 # Macro-averaged F1, use bags of tokens to compute accuracy
 ## Used by SQuAD dataset, answer is correct span (verbatim) from a wikipedia passage (model chooses which span)
@@ -75,23 +84,6 @@ def clean_rule_list_prediction(rl):
 ########################
 ## F1 functions
 ########################
-
-# # F1 on a bag of word basis
-# def token_f1_score(prediction, ground_truth):
-#     """
-#     Taken from the official evaluation script for v1.1 of the SQuAD dataset.
-#     """
-#     prediction_tokens = normalize_answer(prediction).split()
-#     ground_truth_tokens = normalize_answer(ground_truth).split()
-#     # Counts the number of times there's a match between the prediction and the ground truth
-#     common = Counter(prediction_tokens) & Counter(ground_truth_tokens)
-#     num_same = sum(common.values())
-#     if num_same == 0:
-#         return 0
-#     precision = 1.0 * num_same / len(prediction_tokens)
-#     recall = 1.0 * num_same / len(ground_truth_tokens)
-#     f1 = (2 * precision * recall) / (precision + recall)
-#     return f1
 
 # F1 on a bag of tokens
 def token_f1_score(prediction_tokens, ground_truth_tokens):
@@ -177,6 +169,13 @@ def eval_retrieval_qa(results_csv):
     2. F1 score for each QA
     """
     results_df = pd.read_csv(results_csv)
+    # Coerce columns to text
+    for col in ["model_prediction", "ground_truth"]:
+        if col in results_df.columns:
+            non_str = sum(not isinstance(v, str) for v in results_df[col].values)
+            if non_str:
+                print(f"[metrics][retrieval] coerced non-strings in {col}: {non_str}")
+            results_df[col] = results_df[col].map(_to_text)
     f1_scores = []
     for i, row in results_df.iterrows():
         prediction_tokens = normalize_answer(row['model_prediction']).split()
@@ -197,15 +196,25 @@ def eval_compilation_qa(results_csv):
     2. F1 score for each QA
     """
     results_df = pd.read_csv(results_csv)
+    # Coerce prediction to text; ground truth is a list string - parse safely
+    if "model_prediction" in results_df.columns:
+        non_str = sum(not isinstance(v, str) for v in results_df["model_prediction"].values)
+        if non_str:
+            print(f"[metrics][compilation] coerced non-strings in model_prediction: {non_str}")
+        results_df["model_prediction"] = results_df["model_prediction"].map(_to_text)
     f1_scores = []
     for i, row in results_df.iterrows():
         try:
             prediction_tokens = row['model_prediction'].split(", ")
         except Exception as e:
-            print(f"Error: {e}")
-            print("Model output non-standard")
-        ground_truth_tokens = ast.literal_eval(row['ground_truth'])
-        f1_scores.append(token_f1_score(prediction_tokens, ground_truth_tokens))
+            print(f"[metrics][compilation] prediction parse error at row {i}: {e}")
+            prediction_tokens = []
+        try:
+            gt_list = ast.literal_eval(_to_text(row['ground_truth']))
+        except Exception as e:
+            print(f"[metrics][compilation] ground_truth parse error at row {i}: {e}")
+            gt_list = []
+        f1_scores.append(token_f1_score(prediction_tokens, gt_list))
 
     return mean(f1_scores), f1_scores
 
@@ -225,6 +234,13 @@ def eval_definition_qa(results_csv):
     5. F1 score for each QA (max score if there were synonyms)
     """
     results_df = pd.read_csv(results_csv)
+    # Coerce to text
+    for col in ["model_prediction", "ground_truth", "mentions"]:
+        if col in results_df.columns:
+            non_str = sum(not isinstance(v, str) for v in results_df[col].values)
+            if non_str:
+                print(f"[metrics][definition] coerced non-strings in {col}: {non_str}")
+            results_df[col] = results_df[col].map(_to_text)
     f1_scores = []
     f1_scores_definition = []
     f1_scores_mentioned = []
@@ -277,6 +293,13 @@ def eval_presence_qa(results_csv):
     5. F1 score for each QA (max score if there were synonyms)
     """
     results_df = pd.read_csv(results_csv)
+    # Coerce to text
+    for col in ["model_prediction", "ground_truth", "mentions"]:
+        if col in results_df.columns:
+            non_str = sum(not isinstance(v, str) for v in results_df[col].values)
+            if non_str:
+                print(f"[metrics][presence] coerced non-strings in {col}: {non_str}")
+            results_df[col] = results_df[col].map(_to_text)
 
     # Lists ready for scores
     f1_scores = []
@@ -337,6 +360,13 @@ def eval_dimensions_qa(results_csv):
     8. all rogue-l scores
     """
     results_df = pd.read_csv(results_csv)
+    # Coerce to text
+    for col in ["model_prediction", "ground_truth", "explanation"]:
+        if col in results_df.columns:
+            non_str = sum(not isinstance(v, str) for v in results_df[col].values)
+            if non_str:
+                print(f"[metrics][dimension] coerced non-strings in {col}: {non_str}")
+            results_df[col] = results_df[col].map(_to_text)
 
     # Compute accuracies
     accuracies = []
@@ -370,7 +400,7 @@ def eval_dimensions_qa(results_csv):
                     
             return answer, explanation
         
-        answer, explanation = find_explanation_and_answer(row['model_prediction'])
+        answer, explanation = find_explanation_and_answer(results_df.loc[i, 'model_prediction'])
         
         # Extract the first yes/no in the prediction answer, this will be what we will score the model on
         def get_first_yes_no(text_list):
@@ -401,12 +431,12 @@ def eval_dimensions_qa(results_csv):
                 similarities.append(0)
             else:
                 # compute bleu-2
-                bleu_2 = bleu_score(row['explanation'], explanation, 2) #used bleu 2 instead of 4 because only single reference leads to lower
+                bleu_2 = bleu_score(results_df.loc[i, 'explanation'], explanation, 2) #used bleu 2 instead of 4 because only single reference leads to lower
                 # chance of n-gram overlap
                 bleus.append(bleu_2)
                 
                 # compute rouge-l
-                rouge_l = score_rouge(row['explanation'], explanation)
+                rouge_l = score_rouge(results_df.loc[i, 'explanation'], explanation)
                 rogues.append(rouge_l)
 
                 # # compute similarity
@@ -439,6 +469,13 @@ def eval_functional_performance_qa(results_csv):
         8. all similarity scores=
     """
     results_df = pd.read_csv(results_csv)
+    # Coerce to text
+    for col in ["model_prediction", "ground_truth", "explanation"]:
+        if col in results_df.columns:
+            non_str = sum(not isinstance(v, str) for v in results_df[col].values)
+            if non_str:
+                print(f"[metrics][functional] coerced non-strings in {col}: {non_str}")
+            results_df[col] = results_df[col].map(_to_text)
 
     # Compute accuracies
     accuracies = []
@@ -469,7 +506,7 @@ def eval_functional_performance_qa(results_csv):
                     answer = " ".join(answer.split()[:3])
             return answer, explanation
         
-        answer, explanation = find_explanation_and_answer(row['model_prediction'])
+        answer, explanation = find_explanation_and_answer(results_df.loc[i, 'model_prediction'])
         
         # Extract the first yes/no in the prediction answer, this will be what we will score the model on
         def get_first_yes_no(text_list):
@@ -492,12 +529,12 @@ def eval_functional_performance_qa(results_csv):
             similarities.append(0)
         else:
             # compute bleu-2
-            bleu_2 = bleu_score(row['explanation'], explanation, 2) #used bleu 2 instead of 4 because only single reference leads to lower
+            bleu_2 = bleu_score(results_df.loc[i, 'explanation'], explanation, 2) #used bleu 2 instead of 4 because only single reference leads to lower
             # chance of n-gram overlap
             bleus.append(bleu_2)
             
             # compute rouge-l
-            rouge_l = score_rouge(row['explanation'], explanation)
+            rouge_l = score_rouge(results_df.loc[i, 'explanation'], explanation)
             rogues.append(rouge_l)
 
             # # compute similarity
@@ -520,7 +557,7 @@ if __name__ == '__main__':
     # macro, all = eval_retrieval_qa('eval_metric_test_retrieval.csv')
     # print(macro)
     # print(all)
-
+    
     # # TEST COMPILATION QA
     # print(pd.read_csv('../rule_extraction/compilation_evaluation_gpt4.csv')['ground_truth'].head())
     # print(pd.read_csv('../rule_extraction/compilation_evaluation_gpt4.csv')['model_prediction'].head())
@@ -530,7 +567,7 @@ if __name__ == '__main__':
     # macro_avg, all_answers = eval_compilation_qa('eval_metric_test_compilation.csv')
     # print(macro_avg)
     # print(all_answers)
-
+    
     # # TEST DEFINITION QA
     # macro_avg, definitions_avg, mentioned_avg, no_mention_avg, all_answers = eval_definition_qa('eval_metric_test_definition.csv')
     # print("Macro avg")
@@ -543,7 +580,7 @@ if __name__ == '__main__':
     # print(no_mention_avg)
     # print("All answers")
     # print(all_answers)
-
+    
     # # TEST PRESENCE QA
     # macro_avg, definitions_avg, mentioned_avg, no_mentioned_avg, all_answers = eval_presence_qa('eval_metric_test_presence.csv')
     # print("macro average")
@@ -575,7 +612,6 @@ if __name__ == '__main__':
     # print("macro avg rogues")
     # print(macro_avg_rogues)
     # print("all_rogues")
-    # print(all_rogues)
     
     # # # TEST FP QA
     # macro_avg_accuracy, all_accuracies, macro_avg_bleus, all_bleus, macro_avg_rogues, all_rogues = eval_functional_performance_qa('compliance_test_fp.csv')
@@ -591,8 +627,7 @@ if __name__ == '__main__':
     # print("macro avg rogues")
     # print(macro_avg_rogues)
     # print("all_rogues")
-    # print(all_rogues)
-
+    
     # # TEST similarity scores
     sentence_transformer = SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2').cuda()
     final_score = similariry_score("yayayaya", "I hate you", sentence_transformer)
