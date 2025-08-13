@@ -1,131 +1,92 @@
+# scripts/run_pipeline_and_eval.py
 import os
 import sys
+import glob
+import argparse
 import subprocess
 
-from pathlib import Path
-import argparse
-import pandas as pd
+SUBSETS = ["retrieval","compilation","definition","presence","dimension","functional_performance"]
 
-from scripts.pipeline.orchestrate import run_all, Paths, get_clients, run_subset
+def load_dotenv_if_present():
+    try:
+        from dotenv import load_dotenv
+        load_dotenv(dotenv_path=os.path.join(os.getcwd(), ".env"), override=False)
+        print("[INFO] Loaded .env (if present).")
+    except Exception:
+        pass
 
+def latest_csv_matching(keyword: str) -> str | None:
+    # Mimic evaluator's approach: pick newest *.csv matching subset keyword
+    files = [p for p in glob.glob("your_outputs/*.csv") if keyword in os.path.basename(p).lower()]
+    if not files:
+        return None
+    files.sort(key=lambda p: os.path.getmtime(p), reverse=True)
+    return files[0]
+
+def has_model_prediction(csv_path: str) -> bool:
+    import pandas as pd
+    try:
+        df = pd.read_csv(csv_path, nrows=1)
+        return "model_prediction" in df.columns
+    except Exception:
+        return False
+
+def dataset_guess_for(subset: str) -> str | None:
+    # Prefer *who.csv as dataset; else any matching without model_prediction
+    candidates = [p for p in glob.glob("your_outputs/*.csv") if subset in os.path.basename(p).lower()]
+    who = [p for p in candidates if "who" in os.path.basename(p).lower()]
+    if who:
+        who.sort(key=lambda p: os.path.getmtime(p), reverse=True)
+        return who[0]
+    # fallback: first candidate lacking model_prediction
+    import pandas as pd
+    for p in candidates:
+        try:
+            df = pd.read_csv(p, nrows=1)
+            if "model_prediction" not in df.columns:
+                return p
+        except Exception:
+            continue
+    return None
+
+def ensure_predictions(subset: str, model_map_arg: str | None, limit: int | None):
+    # If newest matching CSV lacks model_prediction, try to generate to your_outputs/<subset>.csv
+    newest = latest_csv_matching(subset)
+    if newest and has_model_prediction(newest):
+        print(f"[INFO] {subset}: using existing predictions -> {newest}")
+        return
+
+    ds = dataset_guess_for(subset)
+    if not ds:
+        print(f"[WARN] {subset}: no dataset CSV found to generate predictions (looked in your_outputs/). Skipping generation.")
+        return
+
+    out = os.path.join("your_outputs", f"{subset}.csv")
+    cmd = [sys.executable, "-m", "scripts.generate_predictions",
+           "--subset", subset, "--input", ds, "--output", out]
+    if limit:
+        cmd += ["--limit", str(limit)]
+    if model_map_arg:
+        cmd += ["--model-map", model_map_arg]
+    print("[INFO] Generating:", " ".join(cmd))
+    subprocess.check_call(cmd)
 
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--subset", choices=["retrieval","compilation","definition","presence","dimension","functional","all"], default="all")
-    parser.add_argument("--limit", type=int, default=None)
-    args = parser.parse_args()
+    load_dotenv_if_present()
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--generate", action="store_true", help="Generate predictions for subsets lacking model_prediction before evaluation")
+    ap.add_argument("--limit", type=int, default=None, help="Row cap for generation (for quick tests)")
+    ap.add_argument("--model-map", type=str, default=None, help="Route backends per subset, e.g. 'default=openai;dimension=anthropic'")
+    args, unknown = ap.parse_known_args()
 
-    paths = Paths()
+    if args.generate:
+        for s in SUBSETS:
+            ensure_predictions(s, args.model_map, args.limit)
 
-    default_client, escalation = get_clients()
-
-    Path(paths.out_dir).mkdir(exist_ok=True)
-
-    total_used = 0
-    total_cap = 0
-
-    if args.subset in ("retrieval", "all"):
-        df = pd.read_csv(paths.retrieval_csv)
-        if args.limit: df = df.head(args.limit)
-        preds, who, used, cap = run_subset("retrieval", df.copy(), default_client, escalation)
-        df_out = df.copy()
-        df_out["model_prediction"] = preds
-        df_out.to_csv(os.path.join(paths.out_dir, "retrieval.csv"), index=False)
-        pd.DataFrame({"who": who}).to_csv(os.path.join(paths.out_dir, "retrieval_who.csv"), index=False)
-        print(f"[retrieval] escalations: {used}/{cap} | who: mini={who.count('mini')}, escalation={who.count('escalation')}")
-        total_used += used; total_cap += cap
-
-    if args.subset in ("compilation", "all"):
-        df = pd.read_csv(paths.compilation_csv)
-        if args.limit: df = df.head(args.limit)
-        preds, who, used, cap = run_subset("compilation", df.copy(), default_client, escalation)
-        df_out = df.copy()
-        df_out["model_prediction"] = preds
-        df_out.to_csv(os.path.join(paths.out_dir, "compilation.csv"), index=False)
-        pd.DataFrame({"who": who}).to_csv(os.path.join(paths.out_dir, "compilation_who.csv"), index=False)
-        print(f"[compilation] escalations: {used}/{cap} | who: mini={who.count('mini')}, escalation={who.count('escalation')}")
-        total_used += used; total_cap += cap
-
-    if args.subset in ("definition", "all"):
-        df = pd.read_csv(paths.definition_csv)
-        if args.limit: df = df.head(args.limit)
-        df = df.copy()
-        df["image_path"] = df["image"].apply(lambda n: os.path.join(paths.definition_images_dir, str(n)))
-        preds, who, used, cap = run_subset("definition", df.copy(), default_client, escalation)
-        df_out = df.copy()
-        df_out["model_prediction"] = preds
-        df_out.to_csv(os.path.join(paths.out_dir, "definition.csv"), index=False)
-        pd.DataFrame({"who": who}).to_csv(os.path.join(paths.out_dir, "definition_who.csv"), index=False)
-        print(f"[definition] escalations: {used}/{cap} | who: mini={who.count('mini')}, escalation={who.count('escalation')}")
-        total_used += used; total_cap += cap
-
-    if args.subset in ("presence", "all"):
-        df = pd.read_csv(paths.presence_csv)
-        if args.limit: df = df.head(args.limit)
-        df = df.copy()
-        df["image_path"] = df["image"].apply(lambda n: os.path.join(paths.presence_images_dir, str(n)))
-        preds, who, used, cap = run_subset("presence", df.copy(), default_client, escalation)
-        df_out = df.copy()
-        df_out["model_prediction"] = preds
-        df_out.to_csv(os.path.join(paths.out_dir, "presence.csv"), index=False)
-        pd.DataFrame({"who": who}).to_csv(os.path.join(paths.out_dir, "presence_who.csv"), index=False)
-        print(f"[presence] escalations: {used}/{cap} | who: mini={who.count('mini')}, escalation={who.count('escalation')}")
-        total_used += used; total_cap += cap
-
-    if args.subset in ("dimension", "all"):
-        # context
-        df_ctx = pd.read_csv(paths.dimension_context_csv)
-        if args.limit: df_ctx = df_ctx.head(args.limit)
-        df_ctx = df_ctx.copy()
-        df_ctx["image_path"] = df_ctx["image"].apply(lambda n: os.path.join(paths.dimension_context_images_dir, str(n)))
-        preds_ctx, who_ctx, used_ctx, cap_ctx = run_subset("dimension", df_ctx.copy(), default_client, escalation)
-        out_ctx = df_ctx.copy(); out_ctx["model_prediction"] = preds_ctx
-        out_ctx.to_csv(os.path.join(paths.out_dir, "dimension_context.csv"), index=False)
-        # detailed
-        df_det = pd.read_csv(paths.dimension_detailed_csv)
-        if args.limit: df_det = df_det.head(args.limit)
-        df_det = df_det.copy()
-        df_det["image_path"] = df_det["image"].apply(lambda n: os.path.join(paths.dimension_detailed_images_dir, str(n)))
-        preds_det, who_det, used_det, cap_det = run_subset("dimension", df_det.copy(), default_client, escalation)
-        out_det = df_det.copy(); out_det["model_prediction"] = preds_det
-        out_det.to_csv(os.path.join(paths.out_dir, "dimension_detailed.csv"), index=False)
-        # stitch
-        import pandas as _pd
-        _pd.concat([out_ctx, out_det], ignore_index=True).to_csv(os.path.join(paths.out_dir, "dimension.csv"), index=False)
-        print(f"[dimension] escalations: {used_ctx+used_det}/{cap_ctx+cap_det} | who: mini={(who_ctx+who_det).count('mini')}, escalation={(who_ctx+who_det).count('escalation')}")
-        total_used += used_ctx + used_det; total_cap += cap_ctx + cap_det
-
-    if args.subset in ("functional", "all"):
-        df = pd.read_csv(paths.functional_csv)
-        if args.limit: df = df.head(args.limit)
-        df = df.copy()
-        df["image_path"] = df["image"].apply(lambda n: os.path.join(paths.functional_images_dir, str(n)))
-        preds, who, used, cap = run_subset("functional", df.copy(), default_client, escalation)
-        df_out = df.copy(); df_out["model_prediction"] = preds
-        df_out.to_csv(os.path.join(paths.out_dir, "functional_performance.csv"), index=False)
-        pd.DataFrame({"who": who}).to_csv(os.path.join(paths.out_dir, "functional_who.csv"), index=False)
-        print(f"[functional] escalations: {used}/{cap} | who: mini={who.count('mini')}, escalation={who.count('escalation')}")
-        total_used += used; total_cap += cap
-
-    if total_cap > 0:
-        print(f"[total] escalations: {total_used}/{total_cap}")
-
-    # Full evaluation only when all
-    if args.subset == "all":
-        cmd = [
-            sys.executable, "eval/full_evaluation.py",
-            "--path_to_retrieval", "your_outputs/retrieval.csv",
-            "--path_to_compilation", "your_outputs/compilation.csv",
-            "--path_to_definition", "your_outputs/definition.csv",
-            "--path_to_presence", "your_outputs/presence.csv",
-            "--path_to_dimension", "your_outputs/dimension.csv",
-            "--path_to_functional_performance", "your_outputs/functional_performance.csv",
-            "--save_path", "results.txt",
-        ]
-        if Path("results.txt").exists():
-            Path("results.txt").unlink()
-        subprocess.run(cmd, check=False)
-
+    # Always run the evaluator after (or even without) generation
+    cmd = [sys.executable, "-m", "eval.full_evaluation"] + unknown
+    print("[INFO] Launching evaluator:", " ".join(cmd))
+    os.execv(sys.executable, cmd)
 
 if __name__ == "__main__":
     main()
