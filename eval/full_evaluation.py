@@ -1,6 +1,12 @@
 import argparse
 import os
 from metrics.metrics import eval_retrieval_qa, eval_compilation_qa, eval_definition_qa, eval_presence_qa, eval_dimensions_qa, eval_functional_performance_qa
+from eval.model_router import (
+    parse_model_map,
+    choose_backend_for_subset,
+    openai_chat,
+    claude_chat,
+)
 
 def _find_latest_csv(outputs_dir: str, keyword: str) -> str:
     """Find the most recent CSV in outputs_dir whose filename contains keyword (case-insensitive).
@@ -46,6 +52,15 @@ def _auto_locate_paths(args):
             except FileNotFoundError as e:
                 raise FileNotFoundError(str(e))
 
+def run_llm(messages, subset_name: str, model_map):
+    backend = choose_backend_for_subset(subset_name, model_map)
+    print(f"[INFO] Using backend='{backend}' for subset='{subset_name}'")
+    if backend == "openai":
+        return openai_chat(messages, temperature=0.0, max_tokens=1024)
+    elif backend == "claude":
+        return claude_chat(messages, temperature=0.0, max_tokens=1024)
+    else:
+        raise ValueError(f"Unknown backend '{backend}' for subset '{subset_name}'")
 
 def main():
     parser = argparse.ArgumentParser(description="Optional paths for CAD evaluation inputs")
@@ -64,8 +79,17 @@ def main():
                         help="Path to csv containing presence data (optional)")
     parser.add_argument("--save_path", type=str, default="results.txt",
                         help="Path to .txt file to save the evaluation results (default: results.txt)")
+    parser.add_argument(
+        "--model-map",
+        type=str,
+        default="default=openai",
+        help=("Per-subset backend, e.g. "
+              "'default=openai;dimension=claude;functional_performance=claude' "
+              "Valid: 'openai', 'claude'")
+    )
 
     args = parser.parse_args()
+    model_map = parse_model_map(args.model_map)
 
     # Auto-detect missing CSVs from your_outputs
     _auto_locate_paths(args)
