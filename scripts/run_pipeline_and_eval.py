@@ -16,7 +16,6 @@ def load_dotenv_if_present():
         pass
 
 def latest_csv_matching(keyword: str) -> str | None:
-    # Mimic evaluator's approach: pick newest *.csv matching subset keyword
     files = [p for p in glob.glob("your_outputs/*.csv") if keyword in os.path.basename(p).lower()]
     if not files:
         return None
@@ -32,15 +31,18 @@ def has_model_prediction(csv_path: str) -> bool:
         return False
 
 def dataset_guess_for(subset: str) -> str | None:
-    # Prefer *who.csv as dataset; else any matching without model_prediction
+    """
+    Prefer '*_who.csv' as dataset; else any CSV that matches subset AND lacks 'model_prediction'.
+    """
     candidates = [p for p in glob.glob("your_outputs/*.csv") if subset in os.path.basename(p).lower()]
+    if not candidates:
+        return None
     who = [p for p in candidates if "who" in os.path.basename(p).lower()]
     if who:
         who.sort(key=lambda p: os.path.getmtime(p), reverse=True)
         return who[0]
-    # fallback: first candidate lacking model_prediction
     import pandas as pd
-    for p in candidates:
+    for p in sorted(candidates, key=lambda p: os.path.getmtime(p), reverse=True):
         try:
             df = pd.read_csv(p, nrows=1)
             if "model_prediction" not in df.columns:
@@ -50,7 +52,6 @@ def dataset_guess_for(subset: str) -> str | None:
     return None
 
 def ensure_predictions(subset: str, model_map_arg: str | None, limit: int | None):
-    # If newest matching CSV lacks model_prediction, try to generate to your_outputs/<subset>.csv
     newest = latest_csv_matching(subset)
     if newest and has_model_prediction(newest):
         print(f"[INFO] {subset}: using existing predictions -> {newest}")
@@ -71,19 +72,46 @@ def ensure_predictions(subset: str, model_map_arg: str | None, limit: int | None
     print("[INFO] Generating:", " ".join(cmd))
     subprocess.check_call(cmd)
 
+def normalize_subset_arg(s: str) -> str:
+    s = s.strip().lower()
+    if s == "functional":
+        return "functional_performance"
+    return s
+
 def main():
     load_dotenv_if_present()
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--generate", action="store_true", help="Generate predictions for subsets lacking model_prediction before evaluation")
-    ap.add_argument("--limit", type=int, default=None, help="Row cap for generation (for quick tests)")
-    ap.add_argument("--model-map", type=str, default=None, help="Route backends per subset, e.g. 'default=openai;dimension=anthropic'")
-    args, unknown = ap.parse_known_args()
 
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--subset",
+        choices=["retrieval","compilation","definition","presence","dimension","functional","functional_performance","all"],
+        default="all",
+        help="Which subset(s) to target (default: all). 'functional' is an alias for 'functional_performance'."
+    )
+    parser.add_argument("--limit", type=int, default=None, help="Limit rows per subset when generating.")
+    parser.add_argument("--generate", action="store_true", help="Generate predictions before evaluation.")
+    parser.add_argument(
+        "--model-map",
+        type=str,
+        default=None,
+        help="Route backends per subset, e.g. 'default=openai;dimension=anthropic;functional_performance=anthropic'."
+    )
+
+    # Allow unknown args to flow through to eval.full_evaluation (keep its CLI intact)
+    args, unknown = parser.parse_known_args()
+
+    # Resolve subset list
+    if args.subset == "all":
+        subsets = SUBSETS[:]
+    else:
+        subsets = [normalize_subset_arg(args.subset)]
+
+    # Optional generation phase
     if args.generate:
-        for s in SUBSETS:
+        for s in subsets:
             ensure_predictions(s, args.model_map, args.limit)
 
-    # Always run the evaluator after (or even without) generation
+    # Always launch the evaluator afterward
     cmd = [sys.executable, "-m", "eval.full_evaluation"] + unknown
     print("[INFO] Launching evaluator:", " ".join(cmd))
     os.execv(sys.executable, cmd)
