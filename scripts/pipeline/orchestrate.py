@@ -89,6 +89,26 @@ def get_clients():
     return default_client, escalation
 
 
+def _subset_client_for(provider: str, subset: str, default_client):
+    """Optionally override model per subset via env vars.
+    Env vars: DQ_MODEL_DIMENSION, DQ_MODEL_DEFINITION, DQ_MODEL_PRESENCE
+    """
+    model_env_map = {
+        "dimension": os.getenv("DQ_MODEL_DIMENSION"),
+        "definition": os.getenv("DQ_MODEL_DEFINITION"),
+        "presence": os.getenv("DQ_MODEL_PRESENCE"),
+    }
+    desired = model_env_map.get(subset)
+    if not desired:
+        return default_client
+    provider = (provider or os.getenv("DQ_PROVIDER", "mock")).lower()
+    if provider == "openai":
+        return OpenAIClient(model=desired)
+    if provider == "anthropic":
+        return AnthropicClient(model=desired)
+    return default_client
+
+
 def stitch_dimension_csv():
     out_dir = "your_outputs"
     cand_a = os.path.join(out_dir, "dimension_context.csv")
@@ -110,22 +130,25 @@ def run_subset(subset: str, df: pd.DataFrame, default_client, escalation):
     budget = EscalationBudget(total_items=len(df))
     preds = []
     who = []
+    # Per-subset client override
+    provider = os.getenv("DQ_PROVIDER", "mock").lower()
+    client_for_subset = _subset_client_for(provider, subset, default_client)
     for _, row in df.iterrows():
         # Trim any OCR payload
         if "ocr" in row and isinstance(row["ocr"], str):
             row["ocr"] = limit_ocr(row["ocr"], 200)
         if subset == "presence":
-            p, w = answer_presence(row, default_client, escalation, budget)
+            p, w = answer_presence(row, client_for_subset, escalation, budget)
         elif subset == "definition":
-            p, w = answer_definition(row, default_client, escalation, budget)
+            p, w = answer_definition(row, client_for_subset, escalation, budget)
         elif subset == "compilation":
-            p, w = answer_compilation(row, default_client, escalation, budget)
+            p, w = answer_compilation(row, client_for_subset, escalation, budget)
         elif subset == "retrieval":
-            p, w = answer_retrieval(row, default_client, escalation, budget)
+            p, w = answer_retrieval(row, client_for_subset, escalation, budget)
         elif subset == "dimension":
-            p, w = answer_dimension(row, default_client, escalation, budget)
+            p, w = answer_dimension(row, client_for_subset, escalation, budget)
         elif subset == "functional":
-            p, w = answer_functional(row, default_client, escalation, budget)
+            p, w = answer_functional(row, client_for_subset, escalation, budget)
         else:
             p, w = "INSUFFICIENT", "mini"
         preds.append(p)

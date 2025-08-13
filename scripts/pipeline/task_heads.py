@@ -250,9 +250,9 @@ class DimensionHead:
         preds = []
         for idx, row in df.iterrows():
             q = (
-                "Use the drawing to judge compliance. Respond as:\n"
-                "Explanation: <one short sentence>\n"
-                "Answer: yes/no\n"
+                "You are a vision-and-rules expert. Your job is to read the attached engineering design image and determine if it meets the rule. "
+                "Carefully analyze all scale bars, dimensions, and features required. Convert units if needed. "
+                "Start your answer with 'Explanation:' giving your reasoning. End with 'Answer: yes' or 'Answer: no' ONLY.\n"
                 f"Question: {row['question']}\n"
                 "Explanation:"
             )
@@ -268,8 +268,8 @@ class DimensionHead:
                     preds.append(norm2)
                     continue
             if not v_is_block(norm):
-                norm = "INSUFFICIENT"
-            preds.append(norm if v_is_block(norm) else "Explanation: insufficient\nAnswer: no")
+                norm = v_build_block("Unable to determine from context.", "no")
+            preds.append(norm)
         df_out = df.copy()
         df_out["model_prediction"] = preds
         df_out.to_csv(out_csv, index=False)
