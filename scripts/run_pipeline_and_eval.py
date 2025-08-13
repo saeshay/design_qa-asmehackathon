@@ -15,6 +15,11 @@ def main():
     parser.add_argument("--limit", type=int, default=None)
     args = parser.parse_args()
 
+    # Debug provider/model info
+    print(f"[INFO] DQ_PROVIDER: {os.getenv('DQ_PROVIDER')}")
+    print(f"[INFO] DQ_OPENAI_MODEL: {os.getenv('DQ_OPENAI_MODEL')}")
+    print(f"[INFO] DQ_ANTHROPIC_MODEL: {os.getenv('DQ_ANTHROPIC_MODEL')}")
+
     paths = Paths()
 
     default_client, escalation = get_clients()
