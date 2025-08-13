@@ -2,6 +2,51 @@ import argparse
 import os
 from metrics.metrics import eval_retrieval_qa, eval_compilation_qa, eval_definition_qa, eval_presence_qa, eval_dimensions_qa, eval_functional_performance_qa
 
+def _find_latest_csv(outputs_dir: str, keyword: str) -> str:
+    """Find the most recent CSV in outputs_dir whose filename contains keyword (case-insensitive).
+    Returns full path or raises FileNotFoundError.
+    """
+    if not os.path.isdir(outputs_dir):
+        raise FileNotFoundError(f"Outputs directory not found: {outputs_dir}")
+    kw = keyword.lower()
+    candidates = []
+    for name in os.listdir(outputs_dir):
+        if not name.lower().endswith(".csv"):
+            continue
+        if kw in name.lower():
+            full = os.path.join(outputs_dir, name)
+            try:
+                mtime = os.path.getmtime(full)
+            except Exception:
+                mtime = 0
+            candidates.append((mtime, full))
+    if not candidates:
+        raise FileNotFoundError(f"Could not auto-locate CSV for subset '{keyword}' in {outputs_dir}")
+    candidates.sort(key=lambda x: x[0], reverse=True)
+    return candidates[0][1]
+
+def _auto_locate_paths(args):
+    """Fill missing subset paths by auto-detecting latest CSVs in your_outputs."""
+    outputs_dir = "your_outputs"
+    # Map arg name to keyword to search
+    pairs = [
+        ("path_to_retrieval", "retrieval"),
+        ("path_to_compilation", "compilation"),
+        ("path_to_definition", "definition"),
+        ("path_to_presence", "presence"),
+        ("path_to_dimension", "dimension"),
+        ("path_to_functional_performance", "functional_performance"),
+    ]
+    for attr, key in pairs:
+        if getattr(args, attr) in (None, ""):
+            try:
+                auto_path = _find_latest_csv(outputs_dir, key)
+                print(f"[INFO] Auto-selected {key}: {auto_path}")
+                setattr(args, attr, auto_path)
+            except FileNotFoundError as e:
+                raise FileNotFoundError(str(e))
+
+
 def main():
     parser = argparse.ArgumentParser(description="Optional paths for CAD evaluation inputs")
 
@@ -21,6 +66,9 @@ def main():
                         help="Path to .txt file to save the evaluation results (default: results.txt)")
 
     args = parser.parse_args()
+
+    # Auto-detect missing CSVs from your_outputs
+    _auto_locate_paths(args)
 
     # Check if save path already exists and ask for user confirmation
     if os.path.exists(args.save_path):
@@ -66,18 +114,18 @@ def main():
     # Write all the results to a file
     with open(args.save_path, 'w') as text_file:
         text_file.write("DESIGNQA EVALUATION RESULTS:\n")
-        text_file.write("-*-" * 20 + "\n")
-        text_file.write("-*-" * 20 + "\n")
+        text_file.write("-* -" * 20 + "\n")
+        text_file.write("-* -" * 20 + "\n")
         text_file.write(f"OVERALL SCORE: {sum(all_subsets) / 6}\n")
-        text_file.write("-*-" * 20 + "\n")
-        text_file.write("-*-" * 20 + "\n")
+        text_file.write("-* -" * 20 + "\n")
+        text_file.write("-* -" * 20 + "\n")
         text_file.write(f"Retrieval Score (Avg F1 BoW): {macro_avg_retrieval if args.path_to_retrieval else 'N/A'}\n")
         text_file.write(f"Compilation Score (Avg F1 Rules): {macro_avg_compilation if args.path_to_compilation else 'N/A'}\n")
         text_file.write(f"Definition Score (Avg F1 BoC): {macro_avg_definition if args.path_to_definition else 'N/A'}\n")
         text_file.write(f"Presence Score (Avg Accuracy): {macro_avg_presence if args.path_to_presence else 'N/A'}\n")
         text_file.write(f"Dimension Score (Average Accuracy): {macro_avg_accuracy_dimension if args.path_to_dimension else 'N/A'}\n")
         text_file.write(f"Functional Performance Score (Average Accuracy): {macro_avg_accuracy_functional if args.path_to_functional_performance else 'N/A'}\n")
-        text_file.write("-*-" * 20 + "\n")
+        text_file.write("-* -" * 20 + "\n")
         text_file.write("\n\n\n")
         text_file.write("Below scores by subset are provided for diagnostic purposes:\n")
         text_file.write("---" * 20 + "\n")
@@ -140,12 +188,17 @@ def main():
             text_file.write(f"Avg BLEU score:\n{macro_avg_bleus_functional}\n")
             text_file.write(f"All BLEU scores:\n{all_bleus_functional}\n")
             text_file.write(f"Avg ROUGE score:\n{macro_avg_rogues_functional}\n")
-            text_file.write(f"All ROUGE scores:\n{all_rogues_functional}\n")
         else:
             text_file.write("No functional performance data provided.\n")
 
 if __name__ == "__main__":
     main()
+    
+    
+    
+    
+    
+    
     
 
 
