@@ -1,12 +1,31 @@
 import argparse
 import os
 from metrics.metrics import eval_retrieval_qa, eval_compilation_qa, eval_definition_qa, eval_presence_qa, eval_dimensions_qa, eval_functional_performance_qa
-from eval.model_router import (
-    parse_model_map,
-    choose_backend_for_subset,
-    openai_chat,
-    claude_chat,
-)
+try:
+    from eval.model_router import (
+        parse_model_map, choose_backend_for_subset, openai_chat, claude_chat, mock_chat
+    )
+except ModuleNotFoundError:
+    from model_router import (
+        parse_model_map, choose_backend_for_subset, openai_chat, claude_chat, mock_chat
+    )
+
+SUBSETS = ["retrieval","compilation","definition","presence","dimension","functional_performance"]
+
+def model_map_from_env() -> str:
+    """
+    Build a model-map string from env vars.
+    - DQ_PROVIDER sets the default (openai|anthropic|mock)
+    - DQ_MODEL_<SUBSET> overrides per subset (same 3 values)
+    """
+    default = (os.getenv("DQ_PROVIDER") or "openai").strip().lower()
+    entries = [f"default={default}"]
+    for s in SUBSETS:
+        env_key = f"DQ_MODEL_{s.upper()}"
+        val = os.getenv(env_key)
+        if val:
+            entries.append(f"{s}={val.strip().lower()}")
+    return ";".join(entries)
 
 def _find_latest_csv(outputs_dir: str, keyword: str) -> str:
     """Find the most recent CSV in outputs_dir whose filename contains keyword (case-insensitive).
@@ -57,10 +76,11 @@ def run_llm(messages, subset_name: str, model_map):
     print(f"[INFO] Using backend='{backend}' for subset='{subset_name}'")
     if backend == "openai":
         return openai_chat(messages, temperature=0.0, max_tokens=1024)
-    elif backend == "claude":
+    if backend in ("anthropic","claude"):
         return claude_chat(messages, temperature=0.0, max_tokens=1024)
-    else:
-        raise ValueError(f"Unknown backend '{backend}' for subset '{subset_name}'")
+    if backend == "mock":
+        return mock_chat(messages, temperature=0.0, max_tokens=1024)
+    raise ValueError(f"Unknown backend '{backend}' for subset '{subset_name}'")
 
 def main():
     parser = argparse.ArgumentParser(description="Optional paths for CAD evaluation inputs")
@@ -82,14 +102,15 @@ def main():
     parser.add_argument(
         "--model-map",
         type=str,
-        default="default=openai",
+        default=None,
         help=("Per-subset backend, e.g. "
-              "'default=openai;dimension=claude;functional_performance=claude' "
-              "Valid: 'openai', 'claude'")
+              "'default=openai;dimension=anthropic;functional_performance=anthropic'. "
+              "Valid backends: 'openai', 'anthropic', 'mock'")
     )
 
     args = parser.parse_args()
-    model_map = parse_model_map(args.model_map)
+    model_map_str = args.model_map if args.model_map else model_map_from_env()
+    model_map = parse_model_map(model_map_str)
 
     # Auto-detect missing CSVs from your_outputs
     _auto_locate_paths(args)
