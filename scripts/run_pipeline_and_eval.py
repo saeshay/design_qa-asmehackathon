@@ -112,9 +112,9 @@ def main():
             ensure_predictions(s, args.model_map, args.limit)
 
     # Always launch the evaluator afterward
-    cmd = [sys.executable, "-m", "eval.full_evaluation"] + unknown
+    cmd = [sys.executable, "-m", "eval.full_evaluation", "--overwrite"] + unknown
     print("[INFO] Launching evaluator:", " ".join(cmd))
-    os.execv(sys.executable, cmd)
+    subprocess.run(cmd, check=True)
 
 if __name__ == "__main__":
     main()

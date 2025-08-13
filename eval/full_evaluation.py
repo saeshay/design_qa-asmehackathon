@@ -45,11 +45,12 @@ def main():
                         help="Path to csv containing presence data (optional)")
     parser.add_argument("--save_path", type=str, default="results.txt",
                         help="Path to .txt file to save the evaluation results (default: results.txt)")
+    parser.add_argument("--overwrite", action="store_true", help="Overwrite results.txt without prompting")
 
     args = parser.parse_args()
 
     # Check if save path already exists and ask for user confirmation
-    if os.path.exists(args.save_path):
+    if os.path.exists(args.save_path) and not args.overwrite:
         response = input(f"File '{args.save_path}' already exists. Do you want to overwrite it? (y/n): ").lower().strip()
         if response not in ['y', 'yes']:
             print("Operation cancelled. Exiting without overwriting existing file.")
