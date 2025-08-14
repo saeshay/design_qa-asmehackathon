@@ -1,5 +1,11 @@
 # scripts/generate_predictions.py
-import os
+# --- ensure repo root on sys.path so 'eval.*' imports resolve when run as a module
+import os, sys
+_THIS_DIR = os.path.dirname(os.path.abspath(__file__))
+_REPO_ROOT = os.path.dirname(_THIS_DIR)  # parent of 'scripts'
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+
 import csv
 import time
 import argparse
@@ -7,22 +13,13 @@ import pandas as pd
 from typing import List, Dict
 
 # Use router backends
-try:
-    from eval.model_router import (
-        parse_model_map,
-        choose_backend_for_subset,
-        openai_chat,
-        claude_chat,
-        mock_chat,
-    )
-except ModuleNotFoundError:
-    from eval.model_router import (
-        parse_model_map,
-        choose_backend_for_subset,
-        openai_chat,
-        claude_chat,
-        mock_chat,
-    )
+from eval.model_router import (
+    parse_model_map,
+    choose_backend_for_subset,
+    openai_chat,
+    claude_chat,
+    mock_chat,
+)
 
 SUBSETS = ["retrieval","compilation","definition","presence","dimension","functional_performance"]
 
