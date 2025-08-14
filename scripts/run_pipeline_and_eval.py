@@ -59,8 +59,28 @@ def ensure_predictions(subset: str, model_map_arg: str | None, limit: int | None
 
     ds = dataset_guess_for(subset)
     if not ds:
-        print(f"[WARN] {subset}: no dataset CSV found to generate predictions (looked in your_outputs/). Skipping generation.")
-        return
+        # Try to synthesize a _who.csv from an existing output file by stripping model_prediction
+        out_csv = os.path.join("your_outputs", f"{subset}.csv")
+        if os.path.exists(out_csv):
+            try:
+                import pandas as _pd
+                _cols = _pd.read_csv(out_csv, nrows=1).columns.str.lower().tolist()
+                if "model_prediction" in _cols:
+                    print(f"[INFO] {subset}: synthesizing {subset}_who.csv from {out_csv}")
+                    gen_who = [sys.executable, os.path.join("scripts","make_who_from_outputs.py"),
+                               "--subset", subset, "--input", out_csv, "--outdir", "your_outputs", "--force"]
+                    _env = os.environ.copy()
+                    _env["PYTHONPATH"] = os.getcwd() + (os.pathsep + _env.get("PYTHONPATH",""))
+                    import subprocess as _sp
+                    _sp.check_call(gen_who, env=_env)
+                    ds = os.path.join("your_outputs", f"{subset}_who.csv")
+                else:
+                    print(f"[WARN] {subset}: no dataset CSV found and {out_csv} has no model_prediction to strip.")
+            except Exception as e:
+                print(f"[WARN] {subset}: failed to synthesize _who from {out_csv}: {e}")
+        if not ds:
+            print(f"[WARN] {subset}: no dataset CSV found to generate predictions (looked in your_outputs/). Skipping generation.")
+            return
 
     out = os.path.join("your_outputs", f"{subset}.csv")
     gen_path = os.path.join("scripts", "generate_predictions.py")
