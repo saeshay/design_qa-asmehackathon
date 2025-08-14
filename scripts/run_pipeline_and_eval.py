@@ -51,9 +51,9 @@ def dataset_guess_for(subset: str) -> str | None:
             continue
     return None
 
-def ensure_predictions(subset: str, model_map_arg: str | None, limit: int | None):
+def ensure_predictions(subset: str, model_map_arg: str | None, limit: int | None, force: bool = False):
     newest = latest_csv_matching(subset)
-    if newest and has_model_prediction(newest):
+    if newest and has_model_prediction(newest) and not force:
         print(f"[INFO] {subset}: using existing predictions -> {newest}")
         return
 
@@ -96,6 +96,8 @@ def main():
         default=None,
         help="Route backends per subset, e.g. 'default=openai;dimension=anthropic;functional_performance=anthropic'."
     )
+    parser.add_argument("--regenerate", action="store_true",
+                        help="Force regeneration of predictions for the target subset(s).")
 
     # Allow unknown args to flow through to eval.full_evaluation (keep its CLI intact)
     args, unknown = parser.parse_known_args()
@@ -109,7 +111,7 @@ def main():
     # Optional generation phase
     if args.generate:
         for s in subsets:
-            ensure_predictions(s, args.model_map, args.limit)
+            ensure_predictions(s, args.model_map, args.limit, args.regenerate)
 
     # Always launch the evaluator afterward
     cmd = [sys.executable, "-m", "eval.full_evaluation", "--overwrite"] + unknown
