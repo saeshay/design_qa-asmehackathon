@@ -63,7 +63,8 @@ def ensure_predictions(subset: str, model_map_arg: str | None, limit: int | None
         return
 
     out = os.path.join("your_outputs", f"{subset}.csv")
-    cmd = [sys.executable, "-m", "scripts.generate_predictions",
+    gen_path = os.path.join("scripts", "generate_predictions.py")
+    cmd = [sys.executable, gen_path,
            "--subset", subset, "--input", ds, "--output", out]
     if limit:
         cmd += ["--limit", str(limit)]
