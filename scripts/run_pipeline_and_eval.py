@@ -71,7 +71,14 @@ def ensure_predictions(subset: str, model_map_arg: str | None, limit: int | None
     if model_map_arg:
         cmd += ["--model-map", model_map_arg]
     print("[INFO] Generating:", " ".join(cmd))
-    subprocess.check_call(cmd)
+
+    # NEW: ensure the repo root is on PYTHONPATH for the child process
+    repo_root = os.path.dirname(os.path.abspath(__file__))  # .../scripts -> take parent below
+    repo_root = os.path.dirname(repo_root)
+    env = os.environ.copy()
+    env["PYTHONPATH"] = (repo_root + os.pathsep + env.get("PYTHONPATH", "")) if "PYTHONPATH" in env else repo_root
+
+    subprocess.check_call(cmd, env=env)
 
 def normalize_subset_arg(s: str) -> str:
     s = s.strip().lower()

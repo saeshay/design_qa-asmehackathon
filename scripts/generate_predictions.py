@@ -13,13 +13,28 @@ import pandas as pd
 from typing import List, Dict
 
 # Use router backends
-from eval.model_router import (
-    parse_model_map,
-    choose_backend_for_subset,
-    openai_chat,
-    claude_chat,
-    mock_chat,
-)
+# existing sys.path injection must be above this import
+try:
+    from eval.model_router import (
+        parse_model_map,
+        choose_backend_for_subset,
+        openai_chat,
+        claude_chat,
+        mock_chat,
+    )
+except ModuleNotFoundError:
+    # Fallback: import by file path to be bullet-proof
+    import importlib.util, types
+    _MR_PATH = os.path.join(_REPO_ROOT, "eval", "model_router.py")
+    spec = importlib.util.spec_from_file_location("eval.model_router", _MR_PATH)
+    mod = importlib.util.module_from_spec(spec)
+    assert spec and spec.loader, f"Cannot load model_router at {_MR_PATH}"
+    spec.loader.exec_module(mod)  # type: ignore[attr-defined]
+    parse_model_map = mod.parse_model_map
+    choose_backend_for_subset = mod.choose_backend_for_subset
+    openai_chat = mod.openai_chat
+    claude_chat = mod.claude_chat
+    mock_chat = mod.mock_chat
 
 SUBSETS = ["retrieval","compilation","definition","presence","dimension","functional_performance"]
 
